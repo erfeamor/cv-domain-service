@@ -21,9 +21,19 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 public class SecurityConfig {
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http,
+            @Value("${app.auth.enabled}") boolean authEnabled) throws Exception {
+        http.cors(Customizer.withDefaults());
+
+        if (!authEnabled) {
+            // Local/dev stacks run without a Cognito user pool; mirrors the
+            // AUTH_ENABLED toggle in cv-bff-node. Never disable in production.
+            http.authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
+                    .csrf(csrf -> csrf.disable());
+            return http.build();
+        }
+
         http
-                .cors(Customizer.withDefaults())
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/actuator/health", "/actuator/prometheus",
                                 "/swagger-ui/**", "/v3/api-docs/**").permitAll()
