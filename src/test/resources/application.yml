@@ -1,0 +1,6 @@
+spring:
+  jpa:
+    hibernate:
+      # Tests run against the auto-configured in-memory H2 database, which has
+      # no Flyway-managed schema to validate against.
+      ddl-auto: create-drop
