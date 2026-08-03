@@ -28,6 +28,20 @@ Swagger UI: `http://localhost:8080/swagger-ui.html`. Metrics: `/actuator/prometh
 - **Security**: OAuth2 resource server validating Cognito JWTs. `AUTH_ENABLED=false` (default **true**) disables auth entirely for local stacks — never in deployed config. Health, prometheus, and swagger endpoints stay public either way. CORS origins come from `CORS_ALLOWED_ORIGINS`.
 - `@MockBean` is fine on this Spring Boot version (3.3.x); don't bump Spring Boot in a feature PR.
 
+## Code review guidance
+
+Priorities, ranked:
+
+1. **Contract conformance.** Status codes and payload shapes must match `docs/api-contract.md` exactly (person-scoped nesting, 201/204/404/400, and — for skills — the 409 on duplicate catalog name and the upsert semantics on assignment PUT).
+2. **Schema/entity mismatch.** New columns or types must trace back to a cv-database migration; flag any entity field with no corresponding column.
+3. **Missing test pairing.** A new resource without both a `@WebMvcTest` (mocked repo) and a `@DataJpaTest` (persistence) is incomplete — both patterns must exist per aggregate, not just one.
+4. N+1 queries or missing `@Transactional` boundaries on multi-step writes (e.g. the skill upsert path).
+
+Don't flag:
+- No service layer for a simple aggregate — package-by-feature with entity + repository + controller is the deliberate default until behavior demands one.
+- `@MockBean` usage on this Spring Boot version (3.3.x) — it's fine here, don't suggest replacing it.
+- `AUTH_ENABLED=false` in test/local config — only flag it if it appears in a deployed/prod config path.
+
 ## Git workflow
 
 `master` is protected — feature branch (`feat/…`) → push → PR via `gh`, CI must pass. Definition of done for any code PR: tests for the new path + checkstyle clean.
