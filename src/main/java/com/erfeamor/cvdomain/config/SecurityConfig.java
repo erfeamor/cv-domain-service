@@ -13,7 +13,7 @@ import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 /**
- * Validates AWS Cognito JWTs on every request except health/docs endpoints.
+ * Validates AWS Cognito JWTs on every request except the health probe.
  * The issuer URI comes from `spring.security.oauth2.resourceserver.jwt.issuer-uri`.
  */
 @Configuration
@@ -35,8 +35,25 @@ public class SecurityConfig {
 
         http
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/actuator/health", "/actuator/prometheus",
-                                "/swagger-ui/**", "/v3/api-docs/**").permitAll()
+                        // T-106: only the liveness probe is anonymous.
+                        //
+                        // /v3/api-docs, /swagger-ui/** and /actuator/prometheus
+                        // used to sit in this list, which is why the deployed
+                        // box served its full OpenAPI document to anyone who
+                        // asked (200, including "servers":[{"url":"http://<eip>:8080"}]).
+                        // T-022 removed the network path to it; this removes
+                        // the reason it answered at all, which still matters
+                        // because the CloudFront origin-facing prefix list is
+                        // shared by every CloudFront customer (see T-025).
+                        //
+                        // Local stacks are unaffected: they run
+                        // AUTH_ENABLED=false and take the permitAll branch
+                        // above, so cv-observability's Prometheus keeps
+                        // scraping /actuator/prometheus and Swagger UI keeps
+                        // working on :8080. Deploying a scraper against this
+                        // service means giving it a token -- deliberately, so
+                        // that decision is taken rather than inherited.
+                        .requestMatchers("/actuator/health").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> {}));
         return http.build();

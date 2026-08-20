@@ -25,7 +25,7 @@ Swagger UI: `http://localhost:8080/swagger-ui.html`. Metrics: `/actuator/prometh
 
 - **Schema is owned by cv-database (Flyway), not by JPA.** `ddl-auto: validate` in prod config — entity mappings must match the migration's column names exactly, and *new columns mean a migration PR in cv-database first*.
 - Tests override to H2 + `create-drop` via `src/test/resources/application.yml`. Don't "fix" main config to make a test pass.
-- **Security**: OAuth2 resource server validating Cognito JWTs. `AUTH_ENABLED=false` (default **true**) disables auth entirely for local stacks — never in deployed config. Health, prometheus, and swagger endpoints stay public either way. CORS origins come from `CORS_ALLOWED_ORIGINS`.
+- **Security**: OAuth2 resource server validating Cognito JWTs. `AUTH_ENABLED=false` (default **true**) disables auth entirely for local stacks — never in deployed config. **Only `/actuator/health` is anonymous when auth is on** (T-106). `/v3/api-docs`, `/swagger-ui/**` and `/actuator/prometheus` used to be public too, which is why the deployed box served its whole OpenAPI document to anyone who asked; they now require a token. This costs local dev nothing — local stacks run `AUTH_ENABLED=false` and take the permit-all branch, so Swagger UI and Prometheus scraping work exactly as before on :8080. Deploying a scraper against this service means giving it a token. CORS origins come from `CORS_ALLOWED_ORIGINS`.
 - `@MockBean` is fine on this Spring Boot version (3.3.x); don't bump Spring Boot in a feature PR.
 
 ## Code review guidance
