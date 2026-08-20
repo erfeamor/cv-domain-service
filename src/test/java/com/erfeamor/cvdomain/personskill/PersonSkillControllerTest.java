@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -18,14 +19,19 @@ import com.erfeamor.cvdomain.skill.Skill;
 import com.erfeamor.cvdomain.skill.SkillRepository;
 import java.util.List;
 import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
 /**
@@ -48,6 +54,24 @@ class PersonSkillControllerTest {
 
     @MockBean
     private SkillRepository skillRepository;
+
+    /**
+     * The controller runs each upsert attempt through a transaction template, so the slice needs
+     * one. Stubbed to invoke the callback inline: the point under test is the controller's
+     * branching and its recovery, not Spring's transaction management, and running the callback
+     * for real is what keeps SA4/SA5 asserting against the repository mocks rather than against a
+     * delegation.
+     */
+    @MockBean
+    private TransactionTemplate transactionTemplate;
+
+    @BeforeEach
+    void runTransactionCallbacksInline() {
+        given(transactionTemplate.execute(any())).willAnswer(invocation -> {
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(new SimpleTransactionStatus());
+        });
+    }
 
     private Person person(Long id) {
         Person person = new Person("Jane Doe", "Engineer", "jane@example.com", "Remote", "Bio");
@@ -217,6 +241,10 @@ class PersonSkillControllerTest {
                         .contentType(MediaType.APPLICATION_JSON).content(ADVANCED_BODY))
                 .andExpect(status().isNotFound());
         verify(personSkillRepository, never()).save(any());
+        // DoR 8's check ORDER, not just its outcome: the person check must run first and win, so
+        // the skill is never looked up. Without this a refactor that swapped the two lines would
+        // still 404 here and pass the whole suite, while leaking which id exists.
+        verify(skillRepository, never()).findById(any());
     }
 
     /**
@@ -258,6 +286,9 @@ class PersonSkillControllerTest {
         mockMvc.perform(delete("/api/v1/people/999/skills/5"))
                 .andExpect(status().isNotFound());
         verify(personSkillRepository, never()).delete(any());
+        // The DELETE analogue of SA8: person first, so an absent person short-circuits before the
+        // catalog is consulted.
+        verify(skillRepository, never()).findById(any());
     }
 
     // SA12
@@ -333,6 +364,47 @@ class PersonSkillControllerTest {
                 .andExpect(jsonPath("$.personId").doesNotExist())
                 .andExpect(jsonPath("$.person").doesNotExist())
                 .andExpect(jsonPath("$.skill").doesNotExist());
+    }
+
+    /**
+     * The losing side of a concurrent insert still gets the contract's 200.
+     *
+     * <p>The upsert is a check-then-act: two PUTs on the same unlinked pair both read empty and
+     * both insert, and under InnoDB the loser fails ER_DUP_ENTRY on the composite primary key. A
+     * transaction does not prevent that — it is not mutual exclusion — so the recovery is what
+     * keeps the contract's "200 on BOTH branches" true under load: catch the violation, and take
+     * the update branch against the row the winner just committed.
+     *
+     * <p>Stubbed as consecutive answers because that is exactly what the loser observes: the pair
+     * is absent on the first read and present on the second. Against the version without the
+     * recovery this failed with 500 (the exception propagated), which is the defect.
+     */
+    @Test
+    void putRecoversWithA200WhenItLosesTheInsertRace() throws Exception {
+        personExists();
+        skillExists();
+        // The winner's row, as the loser finds it on re-read: a different proficiency, so the
+        // assertion below cannot pass by echoing the request back.
+        PersonSkill winnersRow = assignment(5L, "Java", "Backend", Proficiency.BEGINNER);
+        given(personSkillRepository.findById(new PersonSkillId(1L, 5L)))
+                .willReturn(Optional.empty())
+                .willReturn(Optional.of(winnersRow));
+        given(personSkillRepository.save(any(PersonSkill.class)))
+                .willThrow(new DataIntegrityViolationException(
+                        "Duplicate entry '1-5' for key 'person_skill.PRIMARY'"))
+                .willAnswer(invocation -> invocation.getArgument(0));
+
+        mockMvc.perform(put("/api/v1/people/1/skills/5")
+                        .contentType(MediaType.APPLICATION_JSON).content(ADVANCED_BODY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.skillId").value(5))
+                .andExpect(jsonPath("$.name").value("Java"))
+                // The requested level is applied, not the level the winner happened to write.
+                .andExpect(jsonPath("$.proficiency").value("ADVANCED"));
+
+        // Twice: the failed insert, then the recovering update. A single call would mean the
+        // recovery returned a stale read without writing the requested proficiency.
+        verify(personSkillRepository, times(2)).save(any(PersonSkill.class));
     }
 
     /**

@@ -7,9 +7,11 @@ import com.erfeamor.cvdomain.skill.SkillRepository;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.validation.Valid;
 import java.util.List;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -49,12 +51,15 @@ public class PersonSkillController {
     private final PersonSkillRepository personSkillRepository;
     private final PersonRepository personRepository;
     private final SkillRepository skillRepository;
+    private final TransactionTemplate transactionTemplate;
 
     public PersonSkillController(PersonSkillRepository personSkillRepository,
-            PersonRepository personRepository, SkillRepository skillRepository) {
+            PersonRepository personRepository, SkillRepository skillRepository,
+            TransactionTemplate transactionTemplate) {
         this.personSkillRepository = personSkillRepository;
         this.personRepository = personRepository;
         this.skillRepository = skillRepository;
+        this.transactionTemplate = transactionTemplate;
     }
 
     @GetMapping
@@ -67,27 +72,57 @@ public class PersonSkillController {
     /**
      * Upserts an assignment: 200 on both branches, never 201 (contract § Skills, DoR 2).
      *
-     * <p>{@code @Transactional} is load-bearing, not decoration. The body of this method is a
-     * check-then-act — read the existing row, then conditionally insert or update — and the two
-     * repository calls would otherwise run in two separate transactions with a window between
-     * them in which another request can insert the same pair. One boundary makes the read and the
-     * write a single unit of work and keeps the entity managed between them, so the update branch
-     * is a real in-place update rather than a second insert the composite key would reject.
+     * <p><strong>What the transaction buys, and what it does not.</strong> The body of an attempt
+     * is a check-then-act — read the pair, then conditionally insert or update. The transaction
+     * makes that one unit of work and, just as importantly, keeps the {@link Skill} loaded by
+     * {@link #requireSkill} managed in the same persistence context as the write, so {@code
+     * merge()} resolves the association to that initialized instance instead of a bare proxy;
+     * with {@code open-in-view: false} an uninitialized proxy would blow up while serializing
+     * {@code name} and {@code category} after the transaction had closed.
+     *
+     * <p>It does <strong>not</strong> serialize concurrent inserts. Two PUTs on the same unlinked
+     * pair both read empty and both insert; the loser fails ER_DUP_ENTRY on the composite primary
+     * key, and the contract requires it to answer 200 rather than 500 — the same hazard, and the
+     * same treatment, as the catalog's duplicate-name 409.
+     *
+     * <p><strong>Why a {@code TransactionTemplate} rather than {@code @Transactional} here.</strong>
+     * Recovery cannot happen inside the failed transaction: after a flush failure Hibernate
+     * refuses further work in that session ({@code AssertionFailure: don't flush the Session after
+     * an exception occurs}) and the transaction is rollback-only, so a catch-and-re-read in place
+     * would merely trade one 500 for another — verified, not assumed. The retry therefore needs a
+     * fresh transaction and a fresh persistence context, which is what a second {@code execute}
+     * gives. It also puts the commit inside this method: with an annotation the INSERT is flushed
+     * at commit <em>after</em> the handler returns, so the violation could not be caught here at
+     * all.
+     *
+     * <p>One retry, not a loop: the second attempt takes the update branch against the row the
+     * winner committed. It could only fail again if that row were deleted in the interval, which
+     * is a genuine conflict rather than a race worth papering over.
      *
      * <p>The request body carries {@code proficiency} alone; {@code personId} and {@code skillId}
      * come from the path. The id written is built from the path variables, so a body that repeats
      * (or forges) them cannot redirect the write to another person's row.
      */
     @PutMapping("/{skillId}")
-    @Transactional
     public PersonSkill upsert(@PathVariable Long personId, @PathVariable Long skillId,
             @Valid @RequestBody PersonSkill body) {
+        try {
+            return transactionTemplate.execute(
+                    status -> applyUpsert(personId, skillId, body.getProficiency()));
+        } catch (DataIntegrityViolationException lostTheInsertRace) {
+            return transactionTemplate.execute(
+                    status -> applyUpsert(personId, skillId, body.getProficiency()));
+        }
+    }
+
+    /** One attempt at the upsert, run inside a single transaction by the caller. */
+    private PersonSkill applyUpsert(Long personId, Long skillId, Proficiency proficiency) {
         Person person = requirePerson(personId);
         Skill skill = requireSkill(skillId);
         PersonSkill assignment = personSkillRepository
                 .findById(new PersonSkillId(personId, skillId))
-                .orElseGet(() -> new PersonSkill(person, skill, body.getProficiency()));
-        assignment.setProficiency(body.getProficiency());
+                .orElseGet(() -> new PersonSkill(person, skill, proficiency));
+        assignment.setProficiency(proficiency);
         return personSkillRepository.save(assignment);
     }
 

@@ -35,7 +35,7 @@ public class Skill {
      */
     @NotBlank
     @Size(max = 100)
-    @Column(nullable = false, unique = true)
+    @Column(nullable = false, unique = true, length = 100)
     private String name;
 
     /** Optional (DoR 3: V1 leaves the column nullable). Null means "uncategorized". */
