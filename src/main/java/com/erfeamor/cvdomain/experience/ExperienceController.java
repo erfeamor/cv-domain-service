@@ -1,5 +1,6 @@
 package com.erfeamor.cvdomain.experience;
 
+import com.erfeamor.cvdomain.common.ClientSuppliedIds;
 import com.erfeamor.cvdomain.person.Person;
 import com.erfeamor.cvdomain.person.PersonRepository;
 import jakarta.persistence.EntityNotFoundException;
@@ -52,6 +53,9 @@ public class ExperienceController {
     @ResponseStatus(HttpStatus.CREATED)
     public Experience create(@PathVariable Long personId,
             @Valid @RequestBody Experience experience) {
+        // T-107: a bound id turns save() into merge(), and the line below has already set the
+        // owning person -- so this would reassign someone else's row to the caller.
+        ClientSuppliedIds.reject(experience.getId());
         experience.setPerson(requirePerson(personId));
         return experienceRepository.save(experience);
     }

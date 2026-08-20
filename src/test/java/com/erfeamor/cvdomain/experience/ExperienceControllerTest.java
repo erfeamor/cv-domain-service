@@ -357,22 +357,50 @@ class ExperienceControllerTest {
                 .andExpect(jsonPath("$[0].person").doesNotExist());
     }
 
+    /*
+     * REPLACED BY T-107. This test used to assert the opposite -- 201, with the client's id
+     * "ignored" -- and it passed, which is why nobody looked again for three weeks:
+     *
+     *     void clientSuppliedIdInThePostBodyIsIgnored() {
+     *         givenPersonExists(1L);
+     *         givenSaveReturnsWithId(5L);          // <-- the mock manufactured the result
+     *         ... .content("{\"id\":999, ...}")
+     *             .andExpect(status().isCreated())
+     *             .andExpect(jsonPath("$.id").value(5));
+     *     }
+     *
+     * Its comment claimed "the entity exposes no id mutator, so Jackson ignores it". Jackson does
+     * NOT ignore it -- INFER_PROPERTY_MUTATORS binds the private field, verified empirically. The
+     * test passed because givenSaveReturnsWithId(5L) stubs save() to return an entity with id 5
+     * whatever it is handed, so the assertion measured the mock rather than the code. Against a
+     * real repository the id would have been 999 and save() would have merged over that row.
+     *
+     * A green test asserting the safe-looking behaviour is worse than no test: it answers the
+     * question before anyone thinks to ask it. Replaced rather than deleted so the shape of the
+     * mistake stays visible.
+     */
+
     /**
-     * Flagged by QA up front: a client-supplied id in the POST body must not override the generated
-     * one (the entity exposes no id mutator, so Jackson ignores it).
+     * T-107: a client-supplied id in a POST body must never reach the repository.
+     *
+     * <p>{@code Experience.id} is a private field with no setter, which reads as un-bindable.
+     * Jackson's INFER_PROPERTY_MUTATORS binds it regardless, and a non-null id makes Spring
+     * Data's {@code save()} take {@code merge()} instead of {@code persist()} — while
+     * {@code create} has already set the owning person to the caller's. The resulting UPDATE
+     * reassigns ANOTHER PERSON'S ROW to the caller and answers 201 with the victim's id.
+     *
+     * <p>That is the same cross-person write {@code findByIdAndPersonId} scopes PUT and DELETE
+     * against (DoR ruling 2), reaching the one verb with no existing row to scope to.
      */
     @Test
-    void clientSuppliedIdInThePostBodyIsIgnored() throws Exception {
+    void rejectsAClientSuppliedIdInsteadOfMergingOverAnExistingRow() throws Exception {
         givenPersonExists(1L);
-        givenSaveReturnsWithId(5L);
 
         mockMvc.perform(post("/api/v1/people/1/experiences")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"id":999,"company":"ACME","role":"Backend Engineer",
-                                 "startDate":"2022-01-01"}
-                                """))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.id").value(5));
+                        .content("{\"id\":999,\"company\":\"ACME\",\"role\":\"Backend Engineer\","
+                                + "\"startDate\":\"2022-01-01\"}"))
+                .andExpect(status().isBadRequest());
+        verify(experienceRepository, never()).save(any());
     }
 }
