@@ -1,5 +1,6 @@
 package com.erfeamor.cvdomain.person;
 
+import com.erfeamor.cvdomain.common.ClientSuppliedIds;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -39,6 +40,9 @@ public class PersonController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public Person create(@Valid @RequestBody Person person) {
+        // T-107: a bound id turns save() into merge() and overwrites that row instead of
+        // creating one. See ClientSuppliedIds for why this is a 400 rather than a silent ignore.
+        ClientSuppliedIds.reject(person.getId());
         return personRepository.save(person);
     }
 

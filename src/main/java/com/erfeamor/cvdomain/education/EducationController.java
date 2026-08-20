@@ -1,5 +1,6 @@
 package com.erfeamor.cvdomain.education;
 
+import com.erfeamor.cvdomain.common.ClientSuppliedIds;
 import com.erfeamor.cvdomain.person.Person;
 import com.erfeamor.cvdomain.person.PersonRepository;
 import jakarta.persistence.EntityNotFoundException;
@@ -17,7 +18,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
 
 /**
  * Person-scoped CRUD for education history, per docs/api-contract.md § Education.
@@ -54,7 +54,7 @@ public class EducationController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public Education create(@PathVariable Long personId, @Valid @RequestBody Education education) {
-        rejectClientSuppliedId(education);
+        ClientSuppliedIds.reject(education.getId());
         education.setPerson(requirePerson(personId));
         return educationRepository.save(education);
     }
@@ -78,29 +78,6 @@ public class EducationController {
         requirePerson(personId);
         // Deleting an id that does not exist under this person is a 404, not a silent 204.
         educationRepository.delete(requireEducation(personId, id));
-    }
-
-    /**
-     * Ids are assigned by the database, and a body that carries one is rejected rather than
-     * ignored.
-     *
-     * <p>This is a security control, not tidiness. {@code Education.id} is a private field with
-     * no setter, but Jackson's {@code INFER_PROPERTY_MUTATORS} binds it regardless, so a POST body
-     * containing {@code "id": 999} arrives here with that id set. A non-null id makes Spring
-     * Data's {@code save()} take the {@code merge()} branch instead of {@code persist()} — and
-     * since the owning person has just been overwritten with the caller's, the resulting UPDATE
-     * would reassign another person's row to the caller and return {@code 201} with the victim's
-     * id. That is precisely the cross-person write {@code findByIdAndPersonId} scopes PUT and
-     * DELETE against, reaching the one verb with no row to scope to.
-     *
-     * <p>PUT needs no equivalent guard: it copies fields onto the row fetched by the scoped
-     * lookup and saves that, so the request body's id is never the id that gets written.
-     */
-    private void rejectClientSuppliedId(Education education) {
-        if (education.getId() != null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "id is assigned by the server and must not be supplied");
-        }
     }
 
     /** The person is resolved before any child lookup, so an unknown person always wins the 404. */
