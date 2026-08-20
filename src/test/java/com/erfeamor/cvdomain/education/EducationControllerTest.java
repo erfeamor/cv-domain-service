@@ -170,8 +170,14 @@ class EducationControllerTest {
                         .content("""
                                 {"institution":"UNED","degree":"BSc","startDate":"2015-09-01"}"""))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.fieldOfStudy").doesNotExist())
-                .andExpect(jsonPath("$.endDate").doesNotExist());
+                // PRESENT and null, not absent. jsonPath's doesNotExist() treats a JSON null as
+                // absent, so asserting that would pass for the wrong reason -- and would keep
+                // passing if someone added @JsonInclude(NON_NULL), which WOULD break the
+                // contract ("absent optionals serialize as null"). Confirmed against live MySQL
+                // during stage-4 QA: the body is {"fieldOfStudy":null,...,"endDate":null}.
+                .andExpect(jsonPath("$.length()").value(6))
+                .andExpect(jsonPath("$.fieldOfStudy").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.endDate").value(org.hamcrest.Matchers.nullValue()));
     }
 
     // C8
