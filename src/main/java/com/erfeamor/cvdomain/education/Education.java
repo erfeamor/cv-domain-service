@@ -12,6 +12,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import java.time.LocalDate;
 import org.hibernate.annotations.OnDelete;
 import org.hibernate.annotations.OnDeleteAction;
@@ -38,11 +39,20 @@ public class Education {
     @OnDelete(action = OnDeleteAction.CASCADE)
     private Person person;
 
+    /**
+     * {@code @Size} mirrors V1's {@code VARCHAR(150)} deliberately. {@code ddl-auto: validate}
+     * does NOT check column length and H2 creates a {@code varchar(255)} from an unannotated
+     * mapping, so without this a 160-character value passes every test and then fails against
+     * real MySQL in strict mode with error 1406 — surfacing as a 500 where contract design rule 4
+     * requires a 400.
+     */
     @NotBlank
+    @Size(max = 150)
     @Column(nullable = false)
     private String institution;
 
     @NotBlank
+    @Size(max = 150)
     @Column(nullable = false)
     private String degree;
 
@@ -52,6 +62,7 @@ public class Education {
      * rather than left to the naming strategy, because H2 tolerates a mismatch that MySQL's
      * {@code ddl-auto: validate} would reject at boot.
      */
+    @Size(max = 150)
     @Column(name = "field_of_study")
     private String fieldOfStudy;
 

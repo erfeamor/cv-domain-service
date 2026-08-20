@@ -150,6 +150,42 @@ class EducationRepositoryTest {
     }
 
     /**
+     * V1 declares institution, degree and field_of_study as VARCHAR(150). Bean validation has to
+     * carry that limit, because nothing else does: {@code ddl-auto: validate} checks names and
+     * types but not lengths, and H2 builds a {@code varchar(255)} from the unannotated mapping —
+     * so an over-long value passes this whole suite and then fails on real MySQL in strict mode
+     * with error 1406, surfacing as a 500 where contract design rule 4 requires a 400.
+     */
+    @Test
+    void rejectsValuesLongerThanTheVarchar150Columns() {
+        Person person = persistPerson("size@example.com");
+        String tooLong = "x".repeat(151);
+
+        assertThatThrownBy(() -> educationRepository.saveAndFlush(new Education(person, tooLong,
+                "BSc", null, LocalDate.of(2015, 9, 1), null)))
+                .isInstanceOf(ConstraintViolationException.class);
+        assertThatThrownBy(() -> educationRepository.saveAndFlush(new Education(person, "UNED",
+                tooLong, null, LocalDate.of(2015, 9, 1), null)))
+                .isInstanceOf(ConstraintViolationException.class);
+        assertThatThrownBy(() -> educationRepository.saveAndFlush(new Education(person, "UNED",
+                "BSc", tooLong, LocalDate.of(2015, 9, 1), null)))
+                .isInstanceOf(ConstraintViolationException.class);
+    }
+
+    /**
+     * The boundary itself must be accepted — 150 is legal, 151 is not. Separate test on purpose:
+     * a ConstraintViolationException leaves the persistence context unusable, so a successful
+     * save cannot follow the rejections above in the same transaction.
+     */
+    @Test
+    void acceptsValuesExactlyAtTheVarchar150Boundary() {
+        Person person = persistPerson("boundary@example.com");
+
+        assertThat(educationRepository.saveAndFlush(new Education(person, "x".repeat(150), "BSc",
+                null, LocalDate.of(2015, 9, 1), null)).getId()).isNotNull();
+    }
+
+    /**
      * Contract § Ordering: startDate DESC, tiebroken by id ASC. The tiebreaker is asserted with
      * two rows sharing a startDate — asserting only the date order passes on unordered data by
      * luck, which is exactly what T-006 filed this rule against.

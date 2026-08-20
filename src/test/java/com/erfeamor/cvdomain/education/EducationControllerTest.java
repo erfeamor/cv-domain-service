@@ -180,6 +180,32 @@ class EducationControllerTest {
                 .andExpect(jsonPath("$.endDate").value(org.hamcrest.Matchers.nullValue()));
     }
 
+    /**
+     * A client-supplied id in a POST body must never reach the repository.
+     *
+     * <p>Not a cosmetic "the server assigns ids" rule. {@code Education.id} is a private field
+     * with no setter, but Jackson's INFER_PROPERTY_MUTATORS binds it anyway — verified
+     * empirically, a body carrying {@code "id":999} deserializes to {@code getId() == 999}. A
+     * non-null id makes Spring Data's {@code save()} take the {@code merge()} branch instead of
+     * {@code persist()}, and because {@code create} has already set the owning person, the
+     * resulting UPDATE reassigns SOMEONE ELSE'S ROW to the caller: person 2's education row is
+     * overwritten and handed to person 1, with a 201 and the victim's id in the response.
+     *
+     * <p>That is the same cross-person write DoR 2 scopes PUT and DELETE against, arriving
+     * through the one verb that had no scoping — so the guard belongs here, not in a follow-up.
+     */
+    @Test
+    void rejectsAClientSuppliedIdInsteadOfMergingOverAnExistingRow() throws Exception {
+        personExists();
+
+        mockMvc.perform(post("/api/v1/people/1/educations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"id\":999,\"institution\":\"UNED\",\"degree\":\"BSc\","
+                                + "\"startDate\":\"2015-09-01\"}"))
+                .andExpect(status().isBadRequest());
+        verify(educationRepository, never()).save(any());
+    }
+
     // C8
     @Test
     void c8UpdatesAnEducationOwnedByThePerson() throws Exception {
@@ -198,6 +224,12 @@ class EducationControllerTest {
                 .andExpect(jsonPath("$.id").value(5))
                 .andExpect(jsonPath("$.institution").value("MIT"))
                 .andExpect(jsonPath("$.degree").value("MSc"))
+                // fieldOfStudy and startDate are asserted because they are the two lines most
+                // easily dropped from the controller's copy block, and without them the whole
+                // suite stays green while PUT silently stops replacing this aggregate's
+                // highest-risk field.
+                .andExpect(jsonPath("$.fieldOfStudy").value("Maths"))
+                .andExpect(jsonPath("$.startDate").value("2020-01-01"))
                 .andExpect(jsonPath("$.endDate").value(org.hamcrest.Matchers.nullValue()));
     }
 
