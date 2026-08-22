@@ -344,6 +344,44 @@ class ProjectControllerTest {
                 .andExpect(jsonPath("$.repoUrl").value("not-a-url"));
     }
 
+    /**
+     * The {@code repo_url} boundary, upper side. V1 declares the column {@code VARCHAR(255)}, and
+     * nothing but bean validation carries that limit: {@code ddl-auto: validate} checks names and
+     * types but not lengths, so without {@code @Size} a 256-character value reaches MySQL in
+     * strict mode, fails with error 1406 and surfaces as a 500 — where contract design rule 4
+     * requires a 400.
+     *
+     * <p>This is a <em>length</em> bound mirroring the column, not the <em>format</em> validation
+     * DoR 5 forbids: it rejects nothing a 255-char column could have stored, so it narrows no
+     * contract. C15 above still passes and must keep passing.
+     */
+    @Test
+    void rejectsARepoUrlLongerThanTheVarchar255Column() throws Exception {
+        personExists();
+        saveEchoes();
+
+        mockMvc.perform(post("/api/v1/people/1/projects")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"cv-project\",\"repoUrl\":\""
+                                + "x".repeat(256) + "\"}"))
+                .andExpect(status().isBadRequest());
+        verify(projectRepository, never()).save(any());
+    }
+
+    /** The boundary itself must be accepted — 255 is legal, 256 is not. */
+    @Test
+    void acceptsARepoUrlExactlyAtTheVarchar255Boundary() throws Exception {
+        personExists();
+        saveEchoes();
+
+        mockMvc.perform(post("/api/v1/people/1/projects")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"cv-project\",\"repoUrl\":\""
+                                + "x".repeat(255) + "\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.repoUrl").value("x".repeat(255)));
+    }
+
     // C16 — the whole response object, field for field. Catches a leaked personId or a nested
     // person object, which the per-field assertions above would not.
     @Test

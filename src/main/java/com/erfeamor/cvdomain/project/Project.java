@@ -69,8 +69,17 @@ public class Project {
      *
      * <p>No {@code @URL} or {@code @Pattern}: the contract states only "Required: {@code name}"
      * and imposes no format anywhere, so a format constraint would narrow the contract without a
-     * contract change.
+     * contract change (DoR 5). An arbitrary non-URL string is a valid value here.
+     *
+     * <p>{@code @Size} mirrors V1's {@code VARCHAR(255)} for the same reason {@code name} carries
+     * one: {@code ddl-auto: validate} does NOT check column length, so without it a 256-character
+     * value reaches MySQL in strict mode, fails with error 1406 and surfaces as a 500 — where
+     * contract design rule 4 requires a 400. This is a <strong>length</strong> bound matching the
+     * column, not the <strong>format</strong> validation DoR 5 forbids: it rejects nothing the
+     * column could have stored, so it narrows no contract. The same pairing already exists on the
+     * optional {@code Education.fieldOfStudy} and {@code Skill.category}.
      */
+    @Size(max = 255)
     @Column(name = "repo_url")
     private String repoUrl;
 
