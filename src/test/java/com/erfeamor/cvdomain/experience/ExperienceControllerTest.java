@@ -83,7 +83,7 @@ class ExperienceControllerTest {
     @Test
     void c1ListsTheExperiencesOfAnExistingPerson() throws Exception {
         givenPersonExists(1L);
-        given(experienceRepository.findByPersonId(1L))
+        given(experienceRepository.findByPersonIdOrderByStartDateDescIdAsc(1L))
                 .willReturn(List.of(experience(5L, "ACME"), experience(6L, "Globex")));
 
         mockMvc.perform(get("/api/v1/people/1/experiences"))
@@ -97,7 +97,7 @@ class ExperienceControllerTest {
     @Test
     void c2ReturnsAnEmptyArrayWhenThePersonHasNoExperiences() throws Exception {
         givenPersonExists(1L);
-        given(experienceRepository.findByPersonId(1L)).willReturn(List.of());
+        given(experienceRepository.findByPersonIdOrderByStartDateDescIdAsc(1L)).willReturn(List.of());
 
         mockMvc.perform(get("/api/v1/people/1/experiences"))
                 .andExpect(status().isOk())
@@ -344,7 +344,7 @@ class ExperienceControllerTest {
     @Test
     void c17ResponseMatchesTheContractShapeExactly() throws Exception {
         givenPersonExists(1L);
-        given(experienceRepository.findByPersonId(1L)).willReturn(List.of(experience(5L, "ACME")));
+        given(experienceRepository.findByPersonIdOrderByStartDateDescIdAsc(1L)).willReturn(List.of(experience(5L, "ACME")));
 
         mockMvc.perform(get("/api/v1/people/1/experiences"))
                 .andExpect(status().isOk())
