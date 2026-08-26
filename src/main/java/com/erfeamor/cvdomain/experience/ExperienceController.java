@@ -46,7 +46,7 @@ public class ExperienceController {
     public List<Experience> findAll(@PathVariable Long personId) {
         requirePerson(personId);
         // An existing person with no rows is an empty collection, not a 404.
-        return experienceRepository.findByPersonId(personId);
+        return experienceRepository.findByPersonIdOrderByStartDateDescIdAsc(personId);
     }
 
     @PostMapping
