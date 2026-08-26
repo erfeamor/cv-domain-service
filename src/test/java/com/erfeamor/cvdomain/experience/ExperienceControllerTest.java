@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -402,5 +403,34 @@ class ExperienceControllerTest {
                                 + "\"startDate\":\"2022-01-01\"}"))
                 .andExpect(status().isBadRequest());
         verify(experienceRepository, never()).save(any());
+    }
+
+    /**
+     * T-105 / contract § Ordering: ordering is the repository's job, and a controller or frontend
+     * that re-sorts creates a second answer that disagrees with the other consumers. This asserts
+     * the controller passes the repository's order straight through.
+     *
+     * <p>The stubbed order is deliberately neither alphabetical by company nor ascending by id, so
+     * a controller that re-sorted on either key would fail here. C1's fixture cannot catch that:
+     * its two rows are already both id-ascending and alphabetical. The sort keys themselves are
+     * asserted against a real database in ExperienceRepositoryTest; a mocked repository cannot
+     * prove them.
+     */
+    @Test
+    void passesTheRepositoryOrderThroughUnchanged() throws Exception {
+        givenPersonExists(1L);
+        given(experienceRepository.findByPersonIdOrderByStartDateDescIdAsc(1L))
+                .willReturn(List.of(experience(7L, "Zeta"), experience(12L, "Alpha"),
+                        experience(9L, "Mid")));
+
+        mockMvc.perform(get("/api/v1/people/1/experiences"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].company").value("Zeta"))
+                .andExpect(jsonPath("$[1].company").value("Alpha"))
+                .andExpect(jsonPath("$[2].company").value("Mid"))
+                .andExpect(jsonPath("$[0].id").value(7))
+                .andExpect(jsonPath("$[1].id").value(12))
+                .andExpect(jsonPath("$[2].id").value(9));
+        verify(experienceRepository).findByPersonIdOrderByStartDateDescIdAsc(eq(1L));
     }
 }

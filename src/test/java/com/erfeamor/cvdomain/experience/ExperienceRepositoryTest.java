@@ -14,6 +14,7 @@ import java.util.Locale;
 import java.util.Map;
 import org.hibernate.cfg.AvailableSettings;
 import org.hibernate.resource.jdbc.spi.StatementInspector;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.orm.jpa.HibernatePropertiesCustomizer;
@@ -34,6 +35,11 @@ class ExperienceRepositoryTest {
      * database was asked for rather than only the row order it happened to return. See
      * {@link #declaresTheIdTiebreakerInTheGeneratedSql()} for why the behavioural assertions are not
      * sufficient on their own.
+     *
+     * <p>{@code STATEMENTS} is process-global mutable state: this class must not be run under
+     * parallel test execution (no {@code junit-platform.properties} and no surefire {@code
+     * parallel} setting enables it today), or unrelated statements would interleave into the
+     * capture and the SQL assertion would flake as if Hibernate had changed.
      */
     @TestConfiguration
     static class CapturedSql implements HibernatePropertiesCustomizer, StatementInspector {
@@ -60,6 +66,12 @@ class ExperienceRepositoryTest {
 
     @Autowired
     private TestEntityManager entityManager;
+
+    /** Leaves no captured SQL behind for the next test in this (single-threaded) class to see. */
+    @BeforeEach
+    void clearCapturedSql() {
+        CapturedSql.STATEMENTS.clear();
+    }
 
     private Person persistPerson(String email) {
         return personRepository.saveAndFlush(
@@ -246,12 +258,20 @@ class ExperienceRepositoryTest {
     }
 
     /**
-     * The {@code id} tiebreaker is asserted with ids assigned <strong>out of insertion order</strong>
-     * — the higher id is inserted first — because the obvious form of this test cannot fail. Ids
-     * come from an IDENTITY column, so two tied rows persisted normally always carry ascending ids
-     * in insertion order, and both H2 and InnoDB commonly return a small unindexed scan in PK order
-     * anyway: the assertion would pass identically with or without a declared secondary key. Only
-     * inverting id against insertion order makes a missing {@code id ASC} observable.
+     * Documents the tiebreaker's intent, and excludes a repository that returns insertion order.
+     *
+     * <p><strong>It cannot go red against a missing {@code id ASC}</strong> — measured, not
+     * assumed (T-105, 2026-08-24). Assigning the ids out of insertion order, as this test does,
+     * was expected to make the missing secondary key observable and does not: H2 walks a tie group
+     * in primary-key order whatever the query says, so this test stayed green under a bare
+     * {@code ORDER BY start_date DESC} and under no {@code ORDER BY} at all. What it still rules
+     * out is an implementation that hands back rows in the order they were inserted, which is why
+     * it is kept rather than deleted.
+     *
+     * <p>The load-bearing assertion is
+     * {@link #declaresTheIdTiebreakerInTheGeneratedSql()} — it is the only one here that
+     * distinguishes a declared tiebreak from an incidental one, and it must not be removed as
+     * redundant on the strength of this test passing.
      */
     @Test
     void ordersRowsSharingAStartDateByIdAscendingEvenWhenIdsRunAgainstInsertionOrder() {
