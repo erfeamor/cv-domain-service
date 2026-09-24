@@ -33,7 +33,10 @@ pipeline {
             }
             post {
                 always {
-                    junit 'target/surefire-reports/*.xml'
+                    // allowEmptyResults: a timeout that aborts before Surefire
+                    // writes any report must stay ABORTED, not turn into a
+                    // "No test report files were found" error in this post step.
+                    junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
                 }
             }
         }
