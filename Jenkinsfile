@@ -10,6 +10,16 @@ pipeline {
         IMAGE_NAME = "cv-domain-service"
     }
 
+    options {
+        // Builds on the CI host take 44-97 s warm and up to 488 s with a cold
+        // ~/.m2 (Jenkins history, 2026-08 to 09). 20 min is ~2.5x the worst cold
+        // build. Nothing else bounds a wedged Maven download or base-image pull:
+        // the host has one executor, shared with cv-database, and the CI-host
+        // reaper only stops the host once busyExecutors == 0, so a hang would
+        // block both repos and keep the host (and its bill) running.
+        timeout(time: 20, unit: 'MINUTES')
+    }
+
     stages {
         stage('Lint') {
             steps {
@@ -42,11 +52,11 @@ pipeline {
 
         stage('Deploy') {
             when {
-                branch 'main'
+                branch 'master'
             }
             steps {
-                // Placeholder until cv-infra exposes a deploy target:
-                // push the image to ECR and roll the EC2 service via SSM.
+                // Not implemented. The ECR push and the instance roll are
+                // T-112 on the cv-project board.
                 echo 'Deploy stage not yet implemented'
             }
         }

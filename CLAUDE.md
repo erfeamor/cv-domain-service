@@ -12,7 +12,7 @@ mvn -B package -DskipTests # build the jar
 docker build -t cv-domain-service .   # multi-stage prod image
 ```
 
-Swagger UI: `http://localhost:8080/swagger-ui.html`. Metrics: `/actuator/prometheus`. CI: `Jenkinsfile` (lint → test → package → image).
+Swagger UI: `http://localhost:8080/swagger-ui.html`. Metrics: `/actuator/prometheus`. CI: `Jenkinsfile` (lint → test → package → image), bounded by a 20-minute pipeline timeout; the `Deploy` stage (gated on `master`) is a no-op placeholder until T-112.
 
 ## Architecture & conventions
 
