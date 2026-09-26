@@ -8,6 +8,8 @@ import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -57,7 +59,24 @@ public class ProjectController {
         return projectRepository.save(project);
     }
 
+    /**
+     * Replaces the fields of an existing row, keeping its id (T-108).
+     *
+     * <p><strong>One transaction, read to write.</strong> With {@code open-in-view: false} and no
+     * annotation, the lookup and the {@code save()} ran as separate transactions, so the write
+     * was a {@code merge()} of a detached entity. Here the row read by {@link #requireProject} stays
+     * managed and the write is a plain dirty-checked UPDATE of that same row.
+     *
+     * <p><strong>A DELETE committed between the read and the write is a 404.</strong> The UPDATE
+     * then matches 0 rows and Hibernate raises a stale-state failure. It is flushed explicitly
+     * here, rather than left to the commit that runs after this method returns, so it surfaces
+     * inside the method and is translated right here — only for this call, not by a handler that
+     * would claim every optimistic-lock failure the controller can raise. The entity carries no
+     * {@code @Version}, so "row gone" is the only way this flush can fail that way; T-113 adds
+     * a version column and must split this catch (version mismatch is a 409, not a 404).
+     */
     @PutMapping("/{id}")
+    @Transactional
     public Project update(@PathVariable Long personId, @PathVariable Long id,
             @Valid @RequestBody Project update) {
         requirePerson(personId);
@@ -67,7 +86,13 @@ public class ProjectController {
         existing.setRepoUrl(update.getRepoUrl());
         existing.setStartDate(update.getStartDate());
         existing.setEndDate(update.getEndDate());
-        return projectRepository.save(existing);
+        try {
+            Project saved = projectRepository.save(existing);
+            projectRepository.flush();
+            return saved;
+        } catch (ObjectOptimisticLockingFailureException deletedSinceRead) {
+            throw new EntityNotFoundException(NOT_FOUND_MESSAGE);
+        }
     }
 
     @DeleteMapping("/{id}")
