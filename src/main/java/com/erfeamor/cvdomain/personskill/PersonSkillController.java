@@ -10,6 +10,7 @@ import java.util.List;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -95,9 +96,19 @@ public class PersonSkillController {
      * at commit <em>after</em> the handler returns, so the violation could not be caught here at
      * all.
      *
+     * <p><strong>The mirror race: a DELETE committed between the read and the write</strong>
+     * (T-108). The attempt read an existing link, so its write is an UPDATE; if the link was
+     * deleted in between, that UPDATE matches 0 rows and the commit fails with a stale-state
+     * {@link ObjectOptimisticLockingFailureException} — a 500 before T-108, verified by test.
+     * It gets the same one retry: the fresh attempt reads the pair as absent and creates it,
+     * which is exactly what a PUT arriving just after that DELETE would have done, so the answer
+     * is a 200 with the requested proficiency. The entity carries no {@code @Version}, so a
+     * deleted row is the only way this exception can arise here.
+     *
      * <p>One retry, not a loop: the second attempt takes the update branch against the row the
-     * winner committed. It could only fail again if that row were deleted in the interval, which
-     * is a genuine conflict rather than a race worth papering over.
+     * winner committed (or the insert branch against the row the DELETE removed). It could only
+     * fail again if the row changed hands once more in that interval, which is a genuine conflict
+     * rather than a race worth papering over.
      *
      * <p>The request body carries {@code proficiency} alone; {@code personId} and {@code skillId}
      * come from the path. The id written is built from the path variables, so a body that repeats
@@ -109,7 +120,8 @@ public class PersonSkillController {
         try {
             return transactionTemplate.execute(
                     status -> applyUpsert(personId, skillId, body.getProficiency()));
-        } catch (DataIntegrityViolationException lostTheInsertRace) {
+        } catch (DataIntegrityViolationException
+                | ObjectOptimisticLockingFailureException lostARace) {
             return transactionTemplate.execute(
                     status -> applyUpsert(personId, skillId, body.getProficiency()));
         }
