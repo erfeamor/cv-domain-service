@@ -56,14 +56,20 @@ import org.springframework.test.web.servlet.MockMvc;
  * and the "concurrent" delete could never commit between the read and the write. That setup
  * false-passes on the unfixed code. Rows are cleaned up by hand in {@link #cleanUp()} instead.
  *
+ * <p><strong>Why {@code open-in-view=false} is pinned here.</strong> It is production's setting,
+ * but the test {@code application.yml} replaces the main one, so tests otherwise run with Spring
+ * Boot's default ({@code true}). With open-in-view on, one EntityManager spans the request, the
+ * entity read by the unfixed code stays managed, and the race surfaces as a 500 at flush instead
+ * of the real production failure — an INSERT under a new id, answered 200. The resurrection
+ * assertions below can only fail, as they must on unfixed code, with this pinned.
+ *
  * <p><strong>H2 vs InnoDB.</strong> H2 defaults to READ COMMITTED; InnoDB defaults to REPEATABLE
  * READ. The difference does not weaken this repro: the defect is about <em>transaction
  * boundaries</em>, not snapshot visibility. Unfixed, the read and the write are separate
  * transactions, so on either engine the write's {@code merge()} re-selects in a fresh transaction
- * and finds nothing. (What happens next is Hibernate's call, not the database's: the task was
- * filed expecting an INSERT under a new id, but Hibernate 6.5 — the version on this branch —
- * throws a stale-state failure instead, so the unfixed code answers 500; either way it is not the
- * contract's 404.) Fixed, the write is an UPDATE, and an UPDATE is a current (locking) read on InnoDB even
+ * and finds nothing, so Hibernate persists the detached entity as new: an INSERT under a fresh
+ * IDENTITY id, answered 200 (verified with {@code open-in-view=false}, see below). Fixed, the
+ * write is an UPDATE, and an UPDATE is a current (locking) read on InnoDB even
  * under REPEATABLE READ — it matches 0 rows against the committed DELETE exactly as it does on
  * H2. What H2 proves nothing about is lock waits (e.g. InnoDB blocking the DELETE on a row the
  * PUT has already updated); this test deliberately commits the DELETE before the PUT writes.
@@ -73,6 +79,11 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureTestDatabase
 @TestPropertySource(properties = {
     "app.auth.enabled=false",
+    // Production's setting (main application.yml). src/test/resources/application.yml replaces
+    // that file rather than overlaying it, so without this line the test would run with Spring
+    // Boot's default open-in-view=true: one EntityManager per request, the read entity stays
+    // managed, and the unfixed code fails as a 500 instead of re-inserting — hiding the defect.
+    "spring.jpa.open-in-view=false",
     "app.cors.allowed-origins=http://localhost:5173"
 })
 class ConcurrentDeleteDuringUpdateTest {
