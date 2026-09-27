@@ -460,4 +460,121 @@ class ProjectControllerTest {
                 .andExpect(jsonPath("$[2].name").value("undated"));
         verify(projectRepository).findByPersonIdOrdered(eq(1L));
     }
+
+    // T-115: the period is checked only when both dates are present; endDate == startDate is fine.
+
+    private static String projectBody(String startDate, String endDate) {
+        return "{\"name\":\"cv-project\",\"startDate\":"
+                + (startDate == null ? "null" : "\"" + startDate + "\"") + ",\"endDate\":"
+                + (endDate == null ? "null" : "\"" + endDate + "\"") + "}";
+    }
+
+    private void ownedProjectExists() {
+        personExists();
+        given(projectRepository.findByIdAndPersonId(5L, 1L))
+                .willReturn(Optional.of(project(5L, "cv-project", null)));
+        saveEchoes();
+    }
+
+    @Test
+    void t115RejectsAnInvertedPeriodOnPost() throws Exception {
+        personExists();
+        saveEchoes();
+
+        mockMvc.perform(post("/api/v1/people/1/projects")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(projectBody("2023-05-01", "2021-01-01")))
+                .andExpect(status().isBadRequest());
+
+        verify(projectRepository, never()).save(any());
+    }
+
+    @Test
+    void t115RejectsAnInvertedPeriodOnPut() throws Exception {
+        ownedProjectExists();
+
+        mockMvc.perform(put("/api/v1/people/1/projects/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(projectBody("2023-05-01", "2021-01-01")))
+                .andExpect(status().isBadRequest());
+
+        verify(projectRepository, never()).save(any());
+    }
+
+
+    @Test
+    void t115AcceptsEqualDatesOnPostAndPut() throws Exception {
+        ownedProjectExists();
+
+        mockMvc.perform(post("/api/v1/people/1/projects")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(projectBody("2023-05-01", "2023-05-01")))
+                .andExpect(status().isCreated());
+        mockMvc.perform(put("/api/v1/people/1/projects/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(projectBody("2023-05-01", "2023-05-01")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void t115AcceptsANullEndDateOnPostAndPut() throws Exception {
+        ownedProjectExists();
+
+        mockMvc.perform(post("/api/v1/people/1/projects")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(projectBody("2023-05-01", null)))
+                .andExpect(status().isCreated());
+        mockMvc.perform(put("/api/v1/people/1/projects/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(projectBody("2023-05-01", null)))
+                .andExpect(status().isOk());
+    }
+
+    /** A non-ISO date is still a 400 at deserialization, before validation ever runs. */
+    @Test
+    void t115MalformedDateIsStillA400() throws Exception {
+        ownedProjectExists();
+
+        mockMvc.perform(post("/api/v1/people/1/projects")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(projectBody("01/05/2023", null)))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(put("/api/v1/people/1/projects/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(projectBody("2023-05-01", "2023-13-45")))
+                .andExpect(status().isBadRequest());
+
+        verify(projectRepository, never()).save(any());
+    }
+
+    /** Neither date is required on a project, and a dateless one has no period to check. */
+    @Test
+    void t115AcceptsAProjectWithNoDatesOnPostAndPut() throws Exception {
+        ownedProjectExists();
+
+        mockMvc.perform(post("/api/v1/people/1/projects")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(projectBody(null, null)))
+                .andExpect(status().isCreated());
+        mockMvc.perform(put("/api/v1/people/1/projects/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(projectBody(null, null)))
+                .andExpect(status().isOk());
+    }
+
+    /** H1: one-sided project dates keep today's behavior — no new rule applies. */
+    @Test
+    void t115AcceptsOneSidedProjectDates() throws Exception {
+        personExists();
+        saveEchoes();
+
+        mockMvc.perform(post("/api/v1/people/1/projects")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(projectBody(null, "2021-01-01")))
+                .andExpect(status().isCreated());
+        mockMvc.perform(post("/api/v1/people/1/projects")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(projectBody("2023-05-01", null)))
+                .andExpect(status().isCreated());
+    }
 }

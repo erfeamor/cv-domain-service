@@ -362,4 +362,95 @@ class EducationControllerTest {
                 .andExpect(jsonPath("$[1].institution").value("UNED"));
         verify(educationRepository).findByPersonIdOrderByStartDateDescIdAsc(eq(1L));
     }
+
+    // T-115: the period is checked only when both dates are present; endDate == startDate is fine.
+
+    private static String educationBody(String startDate, String endDate) {
+        return "{\"institution\":\"UNED\",\"degree\":\"BSc\",\"startDate\":"
+                + (startDate == null ? "null" : "\"" + startDate + "\"") + ",\"endDate\":"
+                + (endDate == null ? "null" : "\"" + endDate + "\"") + "}";
+    }
+
+    private void saveEchoes() {
+        given(educationRepository.save(any(Education.class)))
+                .willAnswer(invocation -> invocation.getArgument(0));
+    }
+
+    private void ownedEducationExists() {
+        personExists();
+        given(educationRepository.findByIdAndPersonId(5L, 1L))
+                .willReturn(Optional.of(education(5L, "UNED", null)));
+        saveEchoes();
+    }
+
+    @Test
+    void t115RejectsAnInvertedPeriodOnPost() throws Exception {
+        personExists();
+        saveEchoes();
+
+        mockMvc.perform(post("/api/v1/people/1/educations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(educationBody("2023-05-01", "2021-01-01")))
+                .andExpect(status().isBadRequest());
+
+        verify(educationRepository, never()).save(any());
+    }
+
+    @Test
+    void t115RejectsAnInvertedPeriodOnPut() throws Exception {
+        ownedEducationExists();
+
+        mockMvc.perform(put("/api/v1/people/1/educations/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(educationBody("2023-05-01", "2021-01-01")))
+                .andExpect(status().isBadRequest());
+
+        verify(educationRepository, never()).save(any());
+    }
+
+
+    @Test
+    void t115AcceptsEqualDatesOnPostAndPut() throws Exception {
+        ownedEducationExists();
+
+        mockMvc.perform(post("/api/v1/people/1/educations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(educationBody("2023-05-01", "2023-05-01")))
+                .andExpect(status().isCreated());
+        mockMvc.perform(put("/api/v1/people/1/educations/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(educationBody("2023-05-01", "2023-05-01")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void t115AcceptsANullEndDateOnPostAndPut() throws Exception {
+        ownedEducationExists();
+
+        mockMvc.perform(post("/api/v1/people/1/educations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(educationBody("2023-05-01", null)))
+                .andExpect(status().isCreated());
+        mockMvc.perform(put("/api/v1/people/1/educations/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(educationBody("2023-05-01", null)))
+                .andExpect(status().isOk());
+    }
+
+    /** A non-ISO date is still a 400 at deserialization, before validation ever runs. */
+    @Test
+    void t115MalformedDateIsStillA400() throws Exception {
+        ownedEducationExists();
+
+        mockMvc.perform(post("/api/v1/people/1/educations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(educationBody("01/05/2023", null)))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(put("/api/v1/people/1/educations/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(educationBody("2023-05-01", "2023-13-45")))
+                .andExpect(status().isBadRequest());
+
+        verify(educationRepository, never()).save(any());
+    }
 }
