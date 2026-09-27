@@ -1,5 +1,7 @@
 package com.erfeamor.cvdomain.experience;
 
+import com.erfeamor.cvdomain.common.Dated;
+import com.erfeamor.cvdomain.common.ValidPeriod;
 import com.erfeamor.cvdomain.person.Person;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
@@ -26,7 +28,8 @@ import org.hibernate.annotations.OnDeleteAction;
  * {@link JsonIgnore}d and never leaks a {@code personId} into the payload.
  */
 @Entity
-public class Experience {
+@ValidPeriod
+public class Experience implements Dated {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -111,6 +114,7 @@ public class Experience {
         this.location = location;
     }
 
+    @Override
     public LocalDate getStartDate() {
         return startDate;
     }
@@ -119,6 +123,7 @@ public class Experience {
         this.startDate = startDate;
     }
 
+    @Override
     public LocalDate getEndDate() {
         return endDate;
     }

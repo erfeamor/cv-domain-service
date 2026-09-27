@@ -3,6 +3,7 @@ package com.erfeamor.cvdomain.experience;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.nullValue;
+import static com.erfeamor.cvdomain.common.PeriodViolation.rejectedByValidPeriod;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
@@ -432,5 +433,93 @@ class ExperienceControllerTest {
                 .andExpect(jsonPath("$[1].id").value(12))
                 .andExpect(jsonPath("$[2].id").value(9));
         verify(experienceRepository).findByPersonIdOrderByStartDateDescIdAsc(eq(1L));
+    }
+
+    // T-115: the period is checked only when both dates are present; endDate == startDate is fine.
+
+    private static String experienceBody(String startDate, String endDate) {
+        return "{\"company\":\"ACME\",\"role\":\"Backend Engineer\",\"startDate\":"
+                + (startDate == null ? "null" : "\"" + startDate + "\"") + ",\"endDate\":"
+                + (endDate == null ? "null" : "\"" + endDate + "\"") + "}";
+    }
+
+    private void givenOwnedExperienceExists() {
+        givenPersonExists(1L);
+        given(experienceRepository.findByIdAndPersonId(5L, 1L))
+                .willReturn(Optional.of(experience(5L, "ACME")));
+        givenSaveReturnsWithId(5L);
+    }
+
+    @Test
+    void t115RejectsAnInvertedPeriodOnPost() throws Exception {
+        givenPersonExists(1L);
+        givenSaveReturnsWithId(5L);
+
+        mockMvc.perform(post("/api/v1/people/1/experiences")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(experienceBody("2023-05-01", "2021-01-01")))
+                .andExpect(status().isBadRequest())
+                .andExpect(rejectedByValidPeriod());
+
+        verify(experienceRepository, never()).save(any());
+    }
+
+    @Test
+    void t115RejectsAnInvertedPeriodOnPut() throws Exception {
+        givenOwnedExperienceExists();
+
+        mockMvc.perform(put("/api/v1/people/1/experiences/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(experienceBody("2023-05-01", "2021-01-01")))
+                .andExpect(status().isBadRequest())
+                .andExpect(rejectedByValidPeriod());
+
+        verify(experienceRepository, never()).save(any());
+    }
+
+
+    @Test
+    void t115AcceptsEqualDatesOnPostAndPut() throws Exception {
+        givenOwnedExperienceExists();
+
+        mockMvc.perform(post("/api/v1/people/1/experiences")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(experienceBody("2023-05-01", "2023-05-01")))
+                .andExpect(status().isCreated());
+        mockMvc.perform(put("/api/v1/people/1/experiences/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(experienceBody("2023-05-01", "2023-05-01")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void t115AcceptsANullEndDateOnPostAndPut() throws Exception {
+        givenOwnedExperienceExists();
+
+        mockMvc.perform(post("/api/v1/people/1/experiences")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(experienceBody("2023-05-01", null)))
+                .andExpect(status().isCreated());
+        mockMvc.perform(put("/api/v1/people/1/experiences/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(experienceBody("2023-05-01", null)))
+                .andExpect(status().isOk());
+    }
+
+    /** A non-ISO date is still a 400 at deserialization, before validation ever runs. */
+    @Test
+    void t115MalformedDateIsStillA400() throws Exception {
+        givenOwnedExperienceExists();
+
+        mockMvc.perform(post("/api/v1/people/1/experiences")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(experienceBody("01/05/2023", null)))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(put("/api/v1/people/1/experiences/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(experienceBody("2023-05-01", "2023-13-45")))
+                .andExpect(status().isBadRequest());
+
+        verify(experienceRepository, never()).save(any());
     }
 }

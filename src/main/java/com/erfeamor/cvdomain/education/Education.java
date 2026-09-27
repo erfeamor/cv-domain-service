@@ -1,5 +1,7 @@
 package com.erfeamor.cvdomain.education;
 
+import com.erfeamor.cvdomain.common.Dated;
+import com.erfeamor.cvdomain.common.ValidPeriod;
 import com.erfeamor.cvdomain.person.Person;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
@@ -27,7 +29,8 @@ import org.hibernate.annotations.OnDeleteAction;
  * the owning person is {@link JsonIgnore}d and never leaks a {@code personId} into the payload.
  */
 @Entity
-public class Education {
+@ValidPeriod
+public class Education implements Dated {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -124,6 +127,7 @@ public class Education {
         this.fieldOfStudy = fieldOfStudy;
     }
 
+    @Override
     public LocalDate getStartDate() {
         return startDate;
     }
@@ -132,6 +136,7 @@ public class Education {
         this.startDate = startDate;
     }
 
+    @Override
     public LocalDate getEndDate() {
         return endDate;
     }

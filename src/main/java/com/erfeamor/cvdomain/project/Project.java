@@ -1,5 +1,7 @@
 package com.erfeamor.cvdomain.project;
 
+import com.erfeamor.cvdomain.common.Dated;
+import com.erfeamor.cvdomain.common.ValidPeriod;
 import com.erfeamor.cvdomain.person.Person;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
@@ -34,7 +36,8 @@ import org.hibernate.annotations.OnDeleteAction;
  * validation at all.
  */
 @Entity
-public class Project {
+@ValidPeriod
+public class Project implements Dated {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -144,6 +147,7 @@ public class Project {
         this.repoUrl = repoUrl;
     }
 
+    @Override
     public LocalDate getStartDate() {
         return startDate;
     }
@@ -152,6 +156,7 @@ public class Project {
         this.startDate = startDate;
     }
 
+    @Override
     public LocalDate getEndDate() {
         return endDate;
     }
