@@ -56,9 +56,9 @@ import org.springframework.test.web.servlet.MockMvc;
  * and the "concurrent" delete could never commit between the read and the write. That setup
  * false-passes on the unfixed code. Rows are cleaned up by hand in {@link #cleanUp()} instead.
  *
- * <p><strong>Why {@code open-in-view=false} is pinned here.</strong> It is production's setting,
- * but the test {@code application.yml} replaces the main one, so tests otherwise run with Spring
- * Boot's default ({@code true}). With open-in-view on, one EntityManager spans the request, the
+ * <p><strong>Why {@code open-in-view=false} is pinned here.</strong> It is production's setting.
+ * The test {@code application.yml} replaces the main one and has set it too since T-114; this
+ * class pins it again anyway (belt and braces) because its validity depends on it. With open-in-view on, one EntityManager spans the request, the
  * entity read by the unfixed code stays managed, and the race surfaces as a 500 at flush instead
  * of the real production failure — an INSERT under a new id, answered 200. The resurrection
  * assertions below can only fail, as they must on unfixed code, with this pinned.
@@ -79,10 +79,10 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureTestDatabase
 @TestPropertySource(properties = {
     "app.auth.enabled=false",
-    // Production's setting (main application.yml). src/test/resources/application.yml replaces
-    // that file rather than overlaying it, so without this line the test would run with Spring
-    // Boot's default open-in-view=true: one EntityManager per request, the read entity stays
-    // managed, and the unfixed code fails as a 500 instead of re-inserting — hiding the defect.
+    // Belt and braces: the test application.yml sets this too since T-114. Kept here because
+    // this test is only valid with it — with open-in-view on, one EntityManager spans the
+    // request, the unfixed code fails as a 500 instead of re-inserting, and the resurrection
+    // assertions could never fail. The test must not depend on a shared file staying put.
     "spring.jpa.open-in-view=false",
     "app.cors.allowed-origins=http://localhost:5173"
 })

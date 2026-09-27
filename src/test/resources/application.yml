@@ -4,3 +4,9 @@ spring:
       # Tests run against the auto-configured in-memory H2 database, which has
       # no Flyway-managed schema to validate against.
       ddl-auto: create-drop
+    # Matches production (src/main/resources/application.yml). This file
+    # replaces the main one on the test classpath rather than overlaying it,
+    # so without this line tests run with Boot's default (true): one
+    # EntityManager per request, which hid T-108's resurrection bug behind a
+    # 500 until review caught it (T-114).
+    open-in-view: false
