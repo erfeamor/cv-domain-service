@@ -1,5 +1,6 @@
 package com.erfeamor.cvdomain.project;
 
+import static com.erfeamor.cvdomain.common.PeriodViolation.rejectedByValidPeriod;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
@@ -484,7 +485,8 @@ class ProjectControllerTest {
         mockMvc.perform(post("/api/v1/people/1/projects")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(projectBody("2023-05-01", "2021-01-01")))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(rejectedByValidPeriod());
 
         verify(projectRepository, never()).save(any());
     }
@@ -496,7 +498,8 @@ class ProjectControllerTest {
         mockMvc.perform(put("/api/v1/people/1/projects/5")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(projectBody("2023-05-01", "2021-01-01")))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(rejectedByValidPeriod());
 
         verify(projectRepository, never()).save(any());
     }

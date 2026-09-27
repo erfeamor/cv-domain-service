@@ -1,5 +1,6 @@
 package com.erfeamor.cvdomain.education;
 
+import static com.erfeamor.cvdomain.common.PeriodViolation.rejectedByValidPeriod;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
@@ -391,7 +392,8 @@ class EducationControllerTest {
         mockMvc.perform(post("/api/v1/people/1/educations")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(educationBody("2023-05-01", "2021-01-01")))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(rejectedByValidPeriod());
 
         verify(educationRepository, never()).save(any());
     }
@@ -403,7 +405,8 @@ class EducationControllerTest {
         mockMvc.perform(put("/api/v1/people/1/educations/5")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(educationBody("2023-05-01", "2021-01-01")))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(rejectedByValidPeriod());
 
         verify(educationRepository, never()).save(any());
     }

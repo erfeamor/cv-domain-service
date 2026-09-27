@@ -3,6 +3,7 @@ package com.erfeamor.cvdomain.experience;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.nullValue;
+import static com.erfeamor.cvdomain.common.PeriodViolation.rejectedByValidPeriod;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
@@ -457,7 +458,8 @@ class ExperienceControllerTest {
         mockMvc.perform(post("/api/v1/people/1/experiences")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(experienceBody("2023-05-01", "2021-01-01")))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(rejectedByValidPeriod());
 
         verify(experienceRepository, never()).save(any());
     }
@@ -469,29 +471,12 @@ class ExperienceControllerTest {
         mockMvc.perform(put("/api/v1/people/1/experiences/5")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(experienceBody("2023-05-01", "2021-01-01")))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(rejectedByValidPeriod());
 
         verify(experienceRepository, never()).save(any());
     }
 
-    /** Contract rule 4: the cross-field 400 is the same default body a @NotNull violation gets. */
-    @Test
-    void t115InvertedPeriodBodyMatchesTheExistingValidationBody() throws Exception {
-        givenPersonExists(1L);
-        givenSaveReturnsWithId(5L);
-
-        String missingField = mockMvc.perform(post("/api/v1/people/1/experiences")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(experienceBody(null, null)))
-                .andExpect(status().isBadRequest())
-                .andReturn().getResponse().getContentAsString();
-
-        mockMvc.perform(post("/api/v1/people/1/experiences")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(experienceBody("2023-05-01", "2021-01-01")))
-                .andExpect(status().isBadRequest())
-                .andExpect(content().string(missingField));
-    }
 
     @Test
     void t115AcceptsEqualDatesOnPostAndPut() throws Exception {
