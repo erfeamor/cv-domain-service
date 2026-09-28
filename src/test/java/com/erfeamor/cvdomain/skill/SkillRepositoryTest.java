@@ -3,17 +3,21 @@ package com.erfeamor.cvdomain.skill;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.erfeamor.cvdomain.testsupport.CapturedSql;
 import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
+import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 
 /**
  * Persistence coverage for the global skill catalog (test-plan case P3, plus catalog ordering).
  */
 @DataJpaTest
+@Import(CapturedSql.class)
 class SkillRepositoryTest {
 
     @Autowired
@@ -22,6 +26,12 @@ class SkillRepositoryTest {
     @Autowired
     private TestEntityManager entityManager;
 
+
+    /** Leaves no captured SQL behind for the next test (or the next class sharing the context). */
+    @BeforeEach
+    void clearCapturedSql() {
+        CapturedSql.clear();
+    }
     /** Round-trips both columns, including a null category read back through the raw column. */
     @Test
     void roundTripsNameAndNullableCategory() {
@@ -72,5 +82,31 @@ class SkillRepositoryTest {
         // simply returned rows in natural order would fail here.
         assertThat(catalog).extracting(Skill::getName)
                 .containsExactly("Ansible", "Java", "Vim");
+    }
+
+
+    /**
+     * T-109 / contract § Ordering: the catalog's {@code id ASC} tiebreaker, asserted in the
+     * emitted SQL.
+     *
+     * <p>Row order cannot carry this evidence (T-105, measured): H2 walks a tie group in
+     * primary-key order whatever the query says, so a row-order assertion stays green with the
+     * tiebreaker deleted. The SQL assertion is the load-bearing one; it goes red the moment the
+     * secondary key leaves the query (T-109, red-first shown by removing it).
+     * No tied fixture is possible here: {@code skill.name} is UNIQUE, so the catalog can never tie
+     * on name. The tiebreaker is therefore unreachable by data (vestigial by schema) yet still
+     * contract-mandated, and this SQL assertion is the only possible evidence of it.
+     */
+    @Test
+    void declaresTheIdTiebreakerInTheGeneratedSql() {
+        skillRepository.saveAndFlush(new Skill("Java", "Backend"));
+        entityManager.clear();
+        CapturedSql.clear();
+
+        skillRepository.findAllByOrderByNameAscIdAsc();
+
+        assertThat(CapturedSql.orderByOfLastSelectFrom("skill"))
+                .as("id ASC must directly follow name ASC, or tie order is unspecified")
+                .containsPattern("\\w+\\.name(\\s+asc)?\\s*,\\s*\\w+\\.id(\\s+asc)?$");
     }
 }

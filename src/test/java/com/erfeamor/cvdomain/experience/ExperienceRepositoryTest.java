@@ -5,58 +5,23 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.erfeamor.cvdomain.person.Person;
 import com.erfeamor.cvdomain.person.PersonRepository;
+import com.erfeamor.cvdomain.testsupport.CapturedSql;
 import jakarta.validation.ConstraintViolationException;
 import java.time.LocalDate;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import org.hibernate.cfg.AvailableSettings;
-import org.hibernate.resource.jdbc.spi.StatementInspector;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.orm.jpa.HibernatePropertiesCustomizer;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Import;
 
 /**
  * Persistence coverage for the experience aggregate (test-plan cases P1-P6).
  */
 @DataJpaTest
-@Import(ExperienceRepositoryTest.CapturedSql.class)
+@Import(CapturedSql.class)
 class ExperienceRepositoryTest {
-
-    /**
-     * Records the SQL Hibernate actually issues, so the ordering tests can assert the sort keys the
-     * database was asked for rather than only the row order it happened to return. See
-     * {@link #declaresTheIdTiebreakerInTheGeneratedSql()} for why the behavioural assertions are not
-     * sufficient on their own.
-     *
-     * <p>{@code STATEMENTS} is process-global mutable state: this class must not be run under
-     * parallel test execution (no {@code junit-platform.properties} and no surefire {@code
-     * parallel} setting enables it today), or unrelated statements would interleave into the
-     * capture and the SQL assertion would flake as if Hibernate had changed.
-     */
-    @TestConfiguration
-    static class CapturedSql implements HibernatePropertiesCustomizer, StatementInspector {
-
-        static final List<String> STATEMENTS = Collections.synchronizedList(new ArrayList<>());
-
-        @Override
-        public void customize(Map<String, Object> hibernateProperties) {
-            hibernateProperties.put(AvailableSettings.STATEMENT_INSPECTOR, this);
-        }
-
-        @Override
-        public String inspect(String sql) {
-            STATEMENTS.add(sql);
-            return sql;
-        }
-    }
 
     @Autowired
     private ExperienceRepository experienceRepository;
@@ -70,7 +35,7 @@ class ExperienceRepositoryTest {
     /** Leaves no captured SQL behind for the next test in this (single-threaded) class to see. */
     @BeforeEach
     void clearCapturedSql() {
-        CapturedSql.STATEMENTS.clear();
+        CapturedSql.clear();
     }
 
     private Person persistPerson(String email) {
@@ -309,22 +274,12 @@ class ExperienceRepositoryTest {
         experienceRepository.saveAndFlush(
                 experienceStarting(person, "any", LocalDate.of(2020, 1, 1)));
         entityManager.clear();
-        CapturedSql.STATEMENTS.clear();
+        CapturedSql.clear();
 
         experienceRepository.findByPersonIdOrderByStartDateDescIdAsc(person.getId());
 
-        String select = CapturedSql.STATEMENTS.stream()
-                .map(sql -> sql.toLowerCase(Locale.ROOT))
-                .filter(sql -> sql.startsWith("select") && sql.contains("from experience"))
-                .reduce((first, second) -> second)
-                .orElseThrow(() -> new AssertionError("no select against experience was issued"));
-
-        assertThat(select).contains("order by");
-        String orderBy = select.substring(select.indexOf("order by"));
-        assertThat(orderBy).contains("start_date desc");
-        assertThat(orderBy.substring(orderBy.indexOf("start_date desc")))
-                .as("an explicit id sort key must follow start_date, or tie order is unspecified")
-                .containsPattern("\\bid\\b");
-        assertThat(orderBy).doesNotContain("id desc");
+        assertThat(CapturedSql.orderByOfLastSelectFrom("experience"))
+                .as("id ASC must directly follow start_date DESC, or tie order is unspecified")
+                .containsPattern("\\w+\\.start_date desc\\s*,\\s*\\w+\\.id(\\s+asc)?$");
     }
 }
