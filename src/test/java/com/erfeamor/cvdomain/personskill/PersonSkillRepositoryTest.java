@@ -243,8 +243,8 @@ class PersonSkillRepositoryTest {
      * fails. A fixture with no null category would pass against the wrong implementation.
      *
      * <p>The {@code skillId} tiebreaker cannot be exercised by data: it only applies when two rows
-     * share both category and name, and {@code skill.name} is UNIQUE. It is asserted by review of
-     * the query, and it matters because {@code person_skill} has no {@code id} column for the
+     * share both category and name, and {@code skill.name} is UNIQUE. It is asserted in the
+     * emitted SQL by {@link #declaresTheSkillIdTiebreakerInTheGeneratedSql()}, and it matters because {@code person_skill} has no {@code id} column for the
      * usual tiebreaker to bind to.
      */
     @Test
@@ -284,8 +284,9 @@ class PersonSkillRepositoryTest {
      * tiebreaker deleted. The SQL assertion is the load-bearing one; it goes red the moment the
      * secondary key leaves the query (T-109, red-first shown by removing it).
      * No tied fixture is possible here: {@code skill.name} is UNIQUE, so two assignments of one
-     * person can never tie on (category, name). The tiebreaker is still contract-mandated, and
-     * only the SQL can evidence it.
+     * person can never tie on (category, name). The tiebreaker is therefore unreachable by data
+     * (vestigial by schema) yet still contract-mandated, and this SQL assertion is the only
+     * possible evidence of it.
      */
     @Test
     void declaresTheSkillIdTiebreakerInTheGeneratedSql() {

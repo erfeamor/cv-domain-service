@@ -94,7 +94,8 @@ class SkillRepositoryTest {
      * tiebreaker deleted. The SQL assertion is the load-bearing one; it goes red the moment the
      * secondary key leaves the query (T-109, red-first shown by removing it).
      * No tied fixture is possible here: {@code skill.name} is UNIQUE, so the catalog can never tie
-     * on name. The tiebreaker is still contract-mandated, and only the SQL can evidence it.
+     * on name. The tiebreaker is therefore unreachable by data (vestigial by schema) yet still
+     * contract-mandated, and this SQL assertion is the only possible evidence of it.
      */
     @Test
     void declaresTheIdTiebreakerInTheGeneratedSql() {

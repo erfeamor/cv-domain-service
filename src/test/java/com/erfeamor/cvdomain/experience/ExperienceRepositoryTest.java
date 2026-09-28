@@ -9,7 +9,6 @@ import com.erfeamor.cvdomain.testsupport.CapturedSql;
 import jakarta.validation.ConstraintViolationException;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Locale;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,7 +35,7 @@ class ExperienceRepositoryTest {
     /** Leaves no captured SQL behind for the next test in this (single-threaded) class to see. */
     @BeforeEach
     void clearCapturedSql() {
-        CapturedSql.STATEMENTS.clear();
+        CapturedSql.clear();
     }
 
     private Person persistPerson(String email) {
@@ -275,22 +274,12 @@ class ExperienceRepositoryTest {
         experienceRepository.saveAndFlush(
                 experienceStarting(person, "any", LocalDate.of(2020, 1, 1)));
         entityManager.clear();
-        CapturedSql.STATEMENTS.clear();
+        CapturedSql.clear();
 
         experienceRepository.findByPersonIdOrderByStartDateDescIdAsc(person.getId());
 
-        String select = CapturedSql.STATEMENTS.stream()
-                .map(sql -> sql.toLowerCase(Locale.ROOT))
-                .filter(sql -> sql.startsWith("select") && sql.contains("from experience"))
-                .reduce((first, second) -> second)
-                .orElseThrow(() -> new AssertionError("no select against experience was issued"));
-
-        assertThat(select).contains("order by");
-        String orderBy = select.substring(select.indexOf("order by"));
-        assertThat(orderBy).contains("start_date desc");
-        assertThat(orderBy.substring(orderBy.indexOf("start_date desc")))
-                .as("an explicit id sort key must follow start_date, or tie order is unspecified")
-                .containsPattern("\\bid\\b");
-        assertThat(orderBy).doesNotContain("id desc");
+        assertThat(CapturedSql.orderByOfLastSelectFrom("experience"))
+                .as("id ASC must directly follow start_date DESC, or tie order is unspecified")
+                .containsPattern("\\w+\\.start_date desc\\s*,\\s*\\w+\\.id(\\s+asc)?$");
     }
 }
