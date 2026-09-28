@@ -5,18 +5,22 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.erfeamor.cvdomain.person.Person;
 import com.erfeamor.cvdomain.person.PersonRepository;
+import com.erfeamor.cvdomain.testsupport.CapturedSql;
 import jakarta.validation.ConstraintViolationException;
 import java.time.LocalDate;
 import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
+import org.springframework.context.annotation.Import;
 
 /**
  * Persistence coverage for the education aggregate (test-plan cases P1-P6).
  */
 @DataJpaTest
+@Import(CapturedSql.class)
 class EducationRepositoryTest {
 
     @Autowired
@@ -28,6 +32,12 @@ class EducationRepositoryTest {
     @Autowired
     private TestEntityManager entityManager;
 
+
+    /** Leaves no captured SQL behind for the next test (or the next class sharing the context). */
+    @BeforeEach
+    void clearCapturedSql() {
+        CapturedSql.clear();
+    }
     private Person persistPerson(String email) {
         return personRepository.saveAndFlush(
                 new Person("Jane Doe", "Engineer", email, "Remote", "Bio"));
@@ -208,5 +218,49 @@ class EducationRepositoryTest {
                 tiedFirstInserted.getId(), tiedSecondInserted.getId(), oldest.getId());
         assertThat(ordered).extracting(Education::getInstitution)
                 .containsExactly("tied-a", "tied-b", "oldest");
+    }
+
+
+    /**
+     * T-109 / contract § Ordering: the {@code id ASC} tiebreaker, asserted in the emitted SQL.
+     *
+     * <p>Row order cannot carry this evidence (T-105, measured): H2 walks a tie group in
+     * primary-key order whatever the query says, so a row-order assertion stays green with the
+     * tiebreaker deleted. The SQL assertion is the load-bearing one; it goes red the moment the
+     * secondary key leaves the query (T-109, red-first shown by removing it).
+     * The fixture still assigns ids against insertion order, so the row assertion rules out an
+     * implementation that returns insertion order.
+     */
+    @Test
+    void declaresTheIdTiebreakerInTheGeneratedSql() {
+        Person person = persistPerson("sql@example.com");
+        LocalDate tiedStart = LocalDate.of(2015, 9, 1);
+        insertWithExplicitId(9002L, person, "inserted-first-higher-id", tiedStart);
+        insertWithExplicitId(9001L, person, "inserted-second-lower-id", tiedStart);
+        entityManager.flush();
+        entityManager.clear();
+        CapturedSql.clear();
+
+        List<Education> ordered =
+                educationRepository.findByPersonIdOrderByStartDateDescIdAsc(person.getId());
+
+        assertThat(ordered).extracting(Education::getId).containsExactly(9001L, 9002L);
+        assertThat(CapturedSql.orderByOfLastSelectFrom("education"))
+                .as("id ASC must directly follow start_date DESC, or tie order is unspecified")
+                .containsPattern("\\w+\\.start_date desc\\s*,\\s*\\w+\\.id(\\s+asc)?$");
+    }
+
+    /** Inserts with a chosen id, bypassing IDENTITY (which would make ids follow insertion order). */
+    private void insertWithExplicitId(long id, Person person, String institution,
+            LocalDate startDate) {
+        entityManager.getEntityManager()
+                .createNativeQuery("INSERT INTO education"
+                        + " (id, person_id, institution, degree, field_of_study, start_date,"
+                        + " end_date) VALUES (?1, ?2, ?3, 'BSc', 'Computer Science', ?4, NULL)")
+                .setParameter(1, id)
+                .setParameter(2, person.getId())
+                .setParameter(3, institution)
+                .setParameter(4, startDate)
+                .executeUpdate();
     }
 }

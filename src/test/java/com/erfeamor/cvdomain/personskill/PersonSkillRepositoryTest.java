@@ -7,17 +7,21 @@ import com.erfeamor.cvdomain.person.Person;
 import com.erfeamor.cvdomain.person.PersonRepository;
 import com.erfeamor.cvdomain.skill.Skill;
 import com.erfeamor.cvdomain.skill.SkillRepository;
+import com.erfeamor.cvdomain.testsupport.CapturedSql;
 import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
+import org.springframework.context.annotation.Import;
 
 /**
  * Persistence coverage for person-skill assignments (test-plan cases P1, P2, P4-P7, plus the
  * assignment ordering).
  */
 @DataJpaTest
+@Import(CapturedSql.class)
 class PersonSkillRepositoryTest {
 
     @Autowired
@@ -32,6 +36,12 @@ class PersonSkillRepositoryTest {
     @Autowired
     private TestEntityManager entityManager;
 
+
+    /** Leaves no captured SQL behind for the next test (or the next class sharing the context). */
+    @BeforeEach
+    void clearCapturedSql() {
+        CapturedSql.clear();
+    }
     private Person persistPerson(String email) {
         return personRepository.saveAndFlush(
                 new Person("Jane Doe", "Engineer", email, "Remote", "Bio"));
@@ -262,5 +272,33 @@ class PersonSkillRepositoryTest {
                 .containsExactly("Java", "Ansible", "Terraform", "Bash", "Vim");
         assertThat(assignments).extracting(PersonSkill::getCategory)
                 .containsExactly("Backend", "Ops", "Ops", null, null);
+    }
+
+
+    /**
+     * T-109 / contract § Ordering: the {@code skill_id ASC} tiebreaker ({@code person_skill} has no
+     * {@code id} column), asserted in the emitted SQL.
+     *
+     * <p>Row order cannot carry this evidence (T-105, measured): H2 walks a tie group in
+     * primary-key order whatever the query says, so a row-order assertion stays green with the
+     * tiebreaker deleted. The SQL assertion is the load-bearing one; it goes red the moment the
+     * secondary key leaves the query (T-109, red-first shown by removing it).
+     * No tied fixture is possible here: {@code skill.name} is UNIQUE, so two assignments of one
+     * person can never tie on (category, name). The tiebreaker is still contract-mandated, and
+     * only the SQL can evidence it.
+     */
+    @Test
+    void declaresTheSkillIdTiebreakerInTheGeneratedSql() {
+        Person person = persistPerson("sql@example.com");
+        personSkillRepository.saveAndFlush(
+                new PersonSkill(person, persistSkill("Java", "Backend"), Proficiency.EXPERT));
+        entityManager.clear();
+        CapturedSql.clear();
+
+        personSkillRepository.findByPersonIdOrdered(person.getId());
+
+        assertThat(CapturedSql.orderByOfLastSelectFrom("person_skill"))
+                .as("skill_id ASC must directly follow name ASC, or tie order is unspecified")
+                .containsPattern("\\w+\\.name(\\s+asc)?\\s*,\\s*\\w+\\.skill_id(\\s+asc)?$");
     }
 }
