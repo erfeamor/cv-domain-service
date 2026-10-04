@@ -1,5 +1,6 @@
 package com.erfeamor.cvdomain.experience;
 
+import com.erfeamor.cvdomain.common.VersionBumping;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -7,7 +8,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 /**
  * Data access for the person-scoped experience aggregate.
  */
-public interface ExperienceRepository extends JpaRepository<Experience, Long> {
+public interface ExperienceRepository extends JpaRepository<Experience, Long>,
+        VersionBumping<Experience> {
 
     /**
      * Ordered per docs/api-contract.md § Ordering: {@code startDate} DESC, tiebroken by {@code id}

@@ -1,5 +1,6 @@
 package com.erfeamor.cvdomain.project;
 
+import static org.mockito.ArgumentMatchers.argThat;
 import static com.erfeamor.cvdomain.common.PeriodViolation.rejectedByValidPeriod;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -14,6 +15,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import com.erfeamor.cvdomain.person.Person;
 import com.erfeamor.cvdomain.person.PersonRepository;
 import java.time.LocalDate;
@@ -181,7 +183,8 @@ class ProjectControllerTest {
                         .content("""
                                 {"name":"name only"}"""))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.length()").value(6))
+                // 7 = the contract's 6 data fields + rule 8's version (T-113).
+                .andExpect(jsonPath("$.length()").value(7))
                 .andExpect(jsonPath("$.name").value("name only"))
                 .andExpect(jsonPath("$.description").value(Matchers.nullValue()))
                 .andExpect(jsonPath("$.repoUrl").value(Matchers.nullValue()))
@@ -388,13 +391,15 @@ class ProjectControllerTest {
     @Test
     void c16ResponseMatchesTheContractShapeExactly() throws Exception {
         personExists();
-        given(projectRepository.findByPersonIdOrdered(1L))
-                .willReturn(List.of(project(5L, "cv-project", LocalDate.of(2026, 7, 1))));
+        Project stored = project(5L, "cv-project", LocalDate.of(2026, 7, 1));
+        ReflectionTestUtils.setField(stored, "version", 3L);
+        given(projectRepository.findByPersonIdOrdered(1L)).willReturn(List.of(stored));
 
         mockMvc.perform(get("/api/v1/people/1/projects"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].length()").value(6))
+                .andExpect(jsonPath("$[0].length()").value(7))
                 .andExpect(jsonPath("$[0].id").value(5))
+                .andExpect(jsonPath("$[0].version").value(3))
                 .andExpect(jsonPath("$[0].name").value("cv-project"))
                 .andExpect(jsonPath("$[0].description").value("An interactive CV"))
                 .andExpect(jsonPath("$[0].repoUrl")
@@ -579,5 +584,68 @@ class ProjectControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(projectBody("2023-05-01", null)))
                 .andExpect(status().isCreated());
+    }
+
+    // ---------------------------------------------------------------- T-113, contract rule 8
+    // Slice-level pairing for OptimisticConcurrencyTest, which covers the same paths end to end.
+
+    private static String withVersion(String json, long version) {
+        return "{\"version\":" + version + "," + json.strip().substring(1);
+    }
+
+    @Test
+    void t113StaleVersionIsA409ProblemAndNothingIsSaved() throws Exception {
+        personExists();
+        Project stored = project(5L, "cv-project", LocalDate.of(2026, 7, 1));
+        ReflectionTestUtils.setField(stored, "id", 5L);
+        ReflectionTestUtils.setField(stored, "version", 2L);
+        given(projectRepository.findByIdAndPersonId(5L, 1L)).willReturn(Optional.of(stored));
+
+        mockMvc.perform(put("/api/v1/people/1/projects/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(withVersion(VALID_BODY, 1)))
+                .andExpect(status().isConflict())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status").value(409));
+
+        verify(projectRepository, never()).save(any());
+    }
+
+    @Test
+    void t113LostRaceIs409IfTheRowStillExistsAnd404IfItIsGone() throws Exception {
+        personExists();
+        Project stored = project(5L, "cv-project", LocalDate.of(2026, 7, 1));
+        ReflectionTestUtils.setField(stored, "id", 5L);
+        ReflectionTestUtils.setField(stored, "version", 0L);
+        given(projectRepository.findByIdAndPersonId(5L, 1L)).willReturn(Optional.of(stored));
+        given(projectRepository.save(any(Project.class)))
+                .willThrow(new ObjectOptimisticLockingFailureException(Project.class, 5L));
+
+        given(projectRepository.existsById(5L)).willReturn(true);
+        mockMvc.perform(put("/api/v1/people/1/projects/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(withVersion(VALID_BODY, 0)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(409));
+
+        given(projectRepository.existsById(5L)).willReturn(false);
+        mockMvc.perform(put("/api/v1/people/1/projects/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(withVersion(VALID_BODY, 0)))
+                .andExpect(status().isNotFound())
+                .andExpect(content().string("Project not found"));
+    }
+
+    @Test
+    void t113PostDiscardsAClientSuppliedVersion() throws Exception {
+        personExists();
+        given(projectRepository.save(any(Project.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        mockMvc.perform(post("/api/v1/people/1/projects")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(withVersion(VALID_BODY, 7)))
+                .andExpect(status().isCreated());
+
+        verify(projectRepository).save(argThat(saved -> saved.getVersion() == null));
     }
 }

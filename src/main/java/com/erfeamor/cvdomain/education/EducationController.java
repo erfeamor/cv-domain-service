@@ -1,11 +1,15 @@
 package com.erfeamor.cvdomain.education;
 
 import com.erfeamor.cvdomain.common.ClientSuppliedIds;
+import com.erfeamor.cvdomain.common.ConcurrentUpdateException;
+import com.erfeamor.cvdomain.common.StaleVersionException;
+import com.erfeamor.cvdomain.common.VersionBumping;
 import com.erfeamor.cvdomain.person.Person;
 import com.erfeamor.cvdomain.person.PersonRepository;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.validation.Valid;
 import java.util.List;
+import java.util.Objects;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
@@ -57,6 +61,7 @@ public class EducationController {
     @ResponseStatus(HttpStatus.CREATED)
     public Education create(@PathVariable Long personId, @Valid @RequestBody Education education) {
         ClientSuppliedIds.reject(education.getId());
+        education.discardClientVersion();
         education.setPerson(requirePerson(personId));
         return educationRepository.save(education);
     }
@@ -69,13 +74,17 @@ public class EducationController {
      * was a {@code merge()} of a detached entity. Here the row read by {@link #requireEducation} stays
      * managed and the write is a plain dirty-checked UPDATE of that same row.
      *
-     * <p><strong>A DELETE committed between the read and the write is a 404.</strong> The UPDATE
-     * then matches 0 rows and Hibernate raises a stale-state failure. It is flushed explicitly
-     * here, rather than left to the commit that runs after this method returns, so it surfaces
-     * inside the method and is translated right here — only for this call, not by a handler that
-     * would claim every optimistic-lock failure the controller can raise. The entity carries no
-     * {@code @Version}, so "row gone" is the only way this flush can fail that way; T-113 adds
-     * a version column and must split this catch (version mismatch is a 409, not a 404).
+     * <p><strong>Optimistic concurrency, contract rule 8 (T-113).</strong> A {@code version} in the
+     * body that differs from the row's is a {@code 409}, checked explicitly against the row read
+     * here ({@link StaleVersionException#requireCurrent}); an omitted one applies unconditionally.
+     * Every successful PUT increments the version, a no-op one included ({@link VersionBumping}).
+     *
+     * <p><strong>A row changed or deleted between the read and the write.</strong> The UPDATE is
+     * conditional on the version read, so it then matches 0 rows and Hibernate raises a
+     * stale-state failure. It is flushed explicitly here, rather than left to the commit that runs
+     * after this method returns, so it surfaces inside the method and is wrapped right here, only
+     * for this call, as a {@link ConcurrentUpdateException}. Its handler below resolves it after
+     * the rollback: row gone is T-108's {@code 404}, row still there is a {@code 409}.
      */
     @PutMapping("/{id}")
     @Transactional
@@ -83,6 +92,8 @@ public class EducationController {
             @Valid @RequestBody Education update) {
         requirePerson(personId);
         Education existing = requireEducation(personId, id);
+        Long readVersion = existing.getVersion();
+        StaleVersionException.requireCurrent(update.getVersion(), readVersion);
         existing.setInstitution(update.getInstitution());
         existing.setDegree(update.getDegree());
         existing.setFieldOfStudy(update.getFieldOfStudy());
@@ -91,9 +102,13 @@ public class EducationController {
         try {
             Education saved = educationRepository.save(existing);
             educationRepository.flush();
+            if (Objects.equals(saved.getVersion(), readVersion)) {
+                // Nothing was dirty, so no UPDATE was issued: bump the version anyway.
+                educationRepository.forceVersionIncrement(saved);
+            }
             return saved;
-        } catch (ObjectOptimisticLockingFailureException deletedSinceRead) {
-            throw new EntityNotFoundException(NOT_FOUND_MESSAGE);
+        } catch (ObjectOptimisticLockingFailureException staleSinceRead) {
+            throw new ConcurrentUpdateException(id, staleSinceRead);
         }
     }
 
@@ -114,6 +129,15 @@ public class EducationController {
     private Education requireEducation(Long personId, Long id) {
         return educationRepository.findByIdAndPersonId(id, personId)
                 .orElseThrow(() -> new EntityNotFoundException(NOT_FOUND_MESSAGE));
+    }
+
+    /** See {@link #update}: runs after the update's transaction has rolled back. */
+    @ExceptionHandler(ConcurrentUpdateException.class)
+    public ResponseEntity<?> handleConcurrentUpdate(ConcurrentUpdateException ex) {
+        if (educationRepository.existsById(ex.getId())) {
+            return StaleVersionException.response();
+        }
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(NOT_FOUND_MESSAGE);
     }
 
     @ExceptionHandler(EntityNotFoundException.class)
