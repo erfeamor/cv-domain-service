@@ -1,5 +1,6 @@
 package com.erfeamor.cvdomain.education;
 
+import com.erfeamor.cvdomain.common.VersionBumping;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -7,7 +8,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 /**
  * Data access for the person-scoped education aggregate.
  */
-public interface EducationRepository extends JpaRepository<Education, Long> {
+public interface EducationRepository extends JpaRepository<Education, Long>,
+        VersionBumping<Education> {
 
     /**
      * Ordered per docs/api-contract.md § Ordering: {@code startDate} DESC, tiebroken by {@code id}

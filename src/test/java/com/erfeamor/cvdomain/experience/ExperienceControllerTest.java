@@ -1,5 +1,6 @@
 package com.erfeamor.cvdomain.experience;
 
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.nullValue;
@@ -18,6 +19,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import com.erfeamor.cvdomain.person.Person;
 import com.erfeamor.cvdomain.person.PersonRepository;
 import java.time.LocalDate;
@@ -181,7 +183,8 @@ class ExperienceControllerTest {
                 .andExpect(jsonPath("$.location", nullValue()))
                 .andExpect(jsonPath("$.endDate", nullValue()))
                 .andExpect(jsonPath("$.description", nullValue()))
-                .andExpect(jsonPath("$.size()").value(7));
+                // 8 = the contract's 7 data fields + rule 8's version (T-113).
+                .andExpect(jsonPath("$.size()").value(8));
     }
 
     /** C8: PUT of an owned row updates it. */
@@ -346,15 +349,18 @@ class ExperienceControllerTest {
     @Test
     void c17ResponseMatchesTheContractShapeExactly() throws Exception {
         givenPersonExists(1L);
-        given(experienceRepository.findByPersonIdOrderByStartDateDescIdAsc(1L)).willReturn(List.of(experience(5L, "ACME")));
+        Experience stored = experience(5L, "ACME");
+        ReflectionTestUtils.setField(stored, "version", 3L);
+        given(experienceRepository.findByPersonIdOrderByStartDateDescIdAsc(1L)).willReturn(List.of(stored));
 
         mockMvc.perform(get("/api/v1/people/1/experiences"))
                 .andExpect(status().isOk())
                 .andExpect(content().json("""
-                        [{"id":5,"company":"ACME","role":"Backend Engineer","location":"Remote",
-                          "startDate":"2022-01-01","endDate":null,"description":"Built things"}]
+                        [{"id":5,"version":3,"company":"ACME","role":"Backend Engineer",
+                          "location":"Remote","startDate":"2022-01-01","endDate":null,
+                          "description":"Built things"}]
                         """, true))
-                .andExpect(jsonPath("$[0].size()").value(7))
+                .andExpect(jsonPath("$[0].size()").value(8))
                 .andExpect(jsonPath("$[0].personId").doesNotExist())
                 .andExpect(jsonPath("$[0].person").doesNotExist());
     }
@@ -521,5 +527,68 @@ class ExperienceControllerTest {
                 .andExpect(status().isBadRequest());
 
         verify(experienceRepository, never()).save(any());
+    }
+
+    // ---------------------------------------------------------------- T-113, contract rule 8
+    // Slice-level pairing for OptimisticConcurrencyTest, which covers the same paths end to end.
+
+    private static String withVersion(String json, long version) {
+        return "{\"version\":" + version + "," + json.strip().substring(1);
+    }
+
+    @Test
+    void t113StaleVersionIsA409ProblemAndNothingIsSaved() throws Exception {
+        givenPersonExists(1L);
+        Experience stored = experience(5L, "ACME");
+        ReflectionTestUtils.setField(stored, "id", 5L);
+        ReflectionTestUtils.setField(stored, "version", 2L);
+        given(experienceRepository.findByIdAndPersonId(5L, 1L)).willReturn(Optional.of(stored));
+
+        mockMvc.perform(put("/api/v1/people/1/experiences/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(withVersion(VALID_BODY, 1)))
+                .andExpect(status().isConflict())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status").value(409));
+
+        verify(experienceRepository, never()).save(any());
+    }
+
+    @Test
+    void t113LostRaceIs409IfTheRowStillExistsAnd404IfItIsGone() throws Exception {
+        givenPersonExists(1L);
+        Experience stored = experience(5L, "ACME");
+        ReflectionTestUtils.setField(stored, "id", 5L);
+        ReflectionTestUtils.setField(stored, "version", 0L);
+        given(experienceRepository.findByIdAndPersonId(5L, 1L)).willReturn(Optional.of(stored));
+        given(experienceRepository.save(any(Experience.class)))
+                .willThrow(new ObjectOptimisticLockingFailureException(Experience.class, 5L));
+
+        given(experienceRepository.existsById(5L)).willReturn(true);
+        mockMvc.perform(put("/api/v1/people/1/experiences/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(withVersion(VALID_BODY, 0)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(409));
+
+        given(experienceRepository.existsById(5L)).willReturn(false);
+        mockMvc.perform(put("/api/v1/people/1/experiences/5")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(withVersion(VALID_BODY, 0)))
+                .andExpect(status().isNotFound())
+                .andExpect(content().string("Experience not found"));
+    }
+
+    @Test
+    void t113PostDiscardsAClientSuppliedVersion() throws Exception {
+        givenPersonExists(1L);
+        given(experienceRepository.save(any(Experience.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        mockMvc.perform(post("/api/v1/people/1/experiences")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(withVersion(VALID_BODY, 7)))
+                .andExpect(status().isCreated());
+
+        verify(experienceRepository).save(argThat(saved -> saved.getVersion() == null));
     }
 }

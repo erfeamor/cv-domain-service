@@ -1,5 +1,6 @@
 package com.erfeamor.cvdomain.project;
 
+import com.erfeamor.cvdomain.common.VersionBumping;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -9,7 +10,8 @@ import org.springframework.data.repository.query.Param;
 /**
  * Data access for the person-scoped project aggregate.
  */
-public interface ProjectRepository extends JpaRepository<Project, Long> {
+public interface ProjectRepository extends JpaRepository<Project, Long>,
+        VersionBumping<Project> {
 
     /**
      * Ordered per docs/api-contract.md § Ordering: {@code startDate} DESC with undated projects
