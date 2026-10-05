@@ -58,9 +58,11 @@ pipeline {
                 branch 'master'
             }
             steps {
-                // Not implemented. The ECR push and the instance roll are
-                // T-112 on the cv-project board.
-                echo 'Deploy stage not yet implemented'
+                // Deploys do not run here: no deploy credential may live on
+                // the CI host (T-005). .github/workflows/deploy.yml waits for
+                // this pipeline's green status on the master commit, then
+                // builds, pushes and rolls the app host (T-112).
+                echo 'Deploy runs from GitHub Actions (.github/workflows/deploy.yml) once this pipeline is green'
             }
         }
     }
