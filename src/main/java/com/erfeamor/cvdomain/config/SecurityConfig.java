@@ -4,6 +4,7 @@ import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -13,12 +14,17 @@ import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 /**
- * Validates AWS Cognito JWTs on every request except the health probe.
+ * Validates AWS Cognito JWTs on every request except the health probe. Reads accept any pool
+ * token; writes (POST, PUT, PATCH, DELETE) require a user token, i.e. scope {@code openid}
+ * (T-116).
  * The issuer URI comes from `spring.security.oauth2.resourceserver.jwt.issuer-uri`.
  */
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
+
+    /** Granted from the JWT's {@code scope} claim; only user tokens carry {@code openid}. */
+    static final String WRITE_AUTHORITY = "SCOPE_openid";
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http,
@@ -54,7 +60,25 @@ public class SecurityConfig {
                         // service means giving it a token -- deliberately, so
                         // that decision is taken rather than inherited.
                         .requestMatchers("/actuator/health").permitAll()
+                        // T-116: writes need a user token. Cognito puts "openid"
+                        // in the scope of hosted-UI (user) access tokens only;
+                        // a client-credentials token (the BFF's: cv-domain/read)
+                        // can never carry it, so every machine token is
+                        // read-only by construction. The default
+                        // JwtGrantedAuthoritiesConverter maps the "scope" claim
+                        // to SCOPE_* authorities. A write without it is 403.
+                        .requestMatchers(HttpMethod.POST).hasAuthority(WRITE_AUTHORITY)
+                        .requestMatchers(HttpMethod.PUT).hasAuthority(WRITE_AUTHORITY)
+                        .requestMatchers(HttpMethod.PATCH).hasAuthority(WRITE_AUTHORITY)
+                        .requestMatchers(HttpMethod.DELETE).hasAuthority(WRITE_AUTHORITY)
+                        // GET, HEAD, OPTIONS: any valid pool token. CORS
+                        // preflight never reaches here (CorsFilter answers it).
                         .anyRequest().authenticated())
+                // Bearer-only and stateless: no cookie or session ever
+                // authenticates a request, so there is nothing for CSRF to
+                // protect. Left on, it answered a token-less write with 403
+                // before authentication could answer 401.
+                .csrf(csrf -> csrf.disable())
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> {}));
         return http.build();
     }
