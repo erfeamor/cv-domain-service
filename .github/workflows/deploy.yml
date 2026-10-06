@@ -67,10 +67,24 @@ jobs:
             sleep 20
           done
 
-  deploy:
+  # Build each architecture on a native runner (no QEMU: an emulated arm64
+  # build stalled for 70 minutes in the T-203 twin pipeline) and push it to ECR
+  # by digest only; the merge job stitches the digests into one manifest list.
+  build:
     needs: wait-for-jenkins
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -86,26 +100,135 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: cv-domain-service-deploy-${{ github.run_id }}
+          role-session-name: cv-domain-service-build-${{ github.run_id }}
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: aws-actions/amazon-ecr-login@v2
 
-      - uses: docker/setup-qemu-action@v3
-
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build and push (multi-arch)
+      - name: Build and push by digest (${{ matrix.platform }})
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.ECR_REPOSITORY }}:latest
-            ${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.ECR_REPOSITORY }},push-by-digest=true,name-canonical=true,push=true
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
+          provenance: false
+
+      - name: Export the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DIGEST}" ]; then
+            echo "::error::build-push-action reported no digest."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Platform pair for the artifact name
+        id: pair
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: echo "pair=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ steps.pair.outputs.pair }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Publish one multi-arch manifest list under :latest and :<sha>, and refuse
+  # to continue unless both architectures are in it.
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Require the deploy role variable
+        env:
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "${ROLE_ARN}" ]; then
+            echo "::error::Repository variable AWS_DEPLOY_ROLE_ARN is not set; cannot assume the deploy role."
+            exit 1
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: cv-domain-service-merge-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Create the manifest list
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          refs=()
+          for d in *; do
+            refs+=("${ECR_REPOSITORY}@sha256:${d}")
+          done
+          if [ "${#refs[@]}" -ne 2 ]; then
+            echo "::error::Expected 2 platform digests, got ${#refs[@]}."
+            exit 1
+          fi
+          docker buildx imagetools create \
+            -t "${ECR_REPOSITORY}:latest" \
+            -t "${ECR_REPOSITORY}:${GITHUB_SHA}" \
+            "${refs[@]}"
+
+      - name: Verify both architectures are published
+        run: |
+          set -euo pipefail
+          platforms=$(docker buildx imagetools inspect "${ECR_REPOSITORY}:${GITHUB_SHA}" \
+            --format '{{json .Manifest}}' \
+            | jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)"')
+          echo "Published platforms:"
+          echo "${platforms}"
+          for want in linux/amd64 linux/arm64; do
+            if ! grep -qx "${want}" <<<"${platforms}"; then
+              echo "::error::${ECR_REPOSITORY}:${GITHUB_SHA} is missing ${want}."
+              exit 1
+            fi
+          done
+
+  deploy:
+    needs: merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Require the deploy role variable
+        env:
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "${ROLE_ARN}" ]; then
+            echo "::error::Repository variable AWS_DEPLOY_ROLE_ARN is not set; cannot assume the deploy role."
+            exit 1
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: cv-domain-service-deploy-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Roll the app host (SSM)
         run: |
