@@ -1,0 +1,294 @@
+# Deploy cv-domain-service to production (T-112).
+#
+# Jenkins (Jenkinsfile) is this repo's CI and test gate. Deploys run here, not
+# in Jenkins, because no deploy credential may live on the CI host: every build
+# there is effectively root through docker.sock (T-005). This workflow assumes
+# a master-only OIDC role and deploys a commit only after Jenkins has reported
+# `success` for that same commit.
+name: deploy
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  id-token: write
+  contents: read
+  statuses: read
+
+# Queue deploys; never cancel one half-way through an SSM roll.
+concurrency:
+  group: deploy-cv-domain-service
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-3
+  ECR_REPOSITORY: 760904708057.dkr.ecr.eu-west-3.amazonaws.com/cv-project-domain-service
+  SSM_DOCUMENT: cv-redeploy-domain-service
+  TARGET_NAME_TAG: cv-project-domain-service
+  JENKINS_CONTEXT: continuous-integration/jenkins/branch
+  PUBLIC_BASE_URL: https://dvdlxl0zqepqi.cloudfront.net
+
+jobs:
+  wait-for-jenkins:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Wait for a green Jenkins status on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # The CI host is on-demand: a doorbell wakes it on push, it boots,
+          # then Jenkins scans, so the status can take several minutes to
+          # appear. Bounded at 30 minutes.
+          deadline=$(( $(date +%s) + 30 * 60 ))
+          while :; do
+            # Statuses are listed newest first; the first entry with our
+            # context is the current state for it.
+            state=$(gh api "repos/${REPO}/commits/${SHA}/statuses?per_page=100" \
+              --jq "[.[] | select(.context == \"${JENKINS_CONTEXT}\")][0].state // \"absent\"" \
+              || echo "api-error")
+            echo "$(date -u +%H:%M:%S) ${JENKINS_CONTEXT}: ${state}"
+            case "$state" in
+              success)
+                echo "Jenkins is green; deploying."
+                exit 0 ;;
+              failure|error)
+                echo "::error::Jenkins is red (${state}); not deploying."
+                exit 1 ;;
+            esac
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::No green Jenkins status for ${SHA} after 30 minutes (last: ${state}); not deploying."
+              exit 1
+            fi
+            sleep 20
+          done
+
+  # Build each architecture on a native runner (no QEMU: an emulated arm64
+  # build stalled for 70 minutes in the T-203 twin pipeline) and push it to ECR
+  # by digest only; the merge job stitches the digests into one manifest list.
+  build:
+    needs: wait-for-jenkins
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require the deploy role variable
+        env:
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "${ROLE_ARN}" ]; then
+            echo "::error::Repository variable AWS_DEPLOY_ROLE_ARN is not set; cannot assume the deploy role."
+            exit 1
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: cv-domain-service-build-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push by digest (${{ matrix.platform }})
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.ECR_REPOSITORY }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: false
+
+      - name: Export the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DIGEST}" ]; then
+            echo "::error::build-push-action reported no digest."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Platform pair for the artifact name
+        id: pair
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: echo "pair=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ steps.pair.outputs.pair }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Publish one multi-arch manifest list under :latest and :<sha>, and refuse
+  # to continue unless both architectures are in it.
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Require the deploy role variable
+        env:
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "${ROLE_ARN}" ]; then
+            echo "::error::Repository variable AWS_DEPLOY_ROLE_ARN is not set; cannot assume the deploy role."
+            exit 1
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: cv-domain-service-merge-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Create the manifest list
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          refs=()
+          for d in *; do
+            refs+=("${ECR_REPOSITORY}@sha256:${d}")
+          done
+          if [ "${#refs[@]}" -ne 2 ]; then
+            echo "::error::Expected 2 platform digests, got ${#refs[@]}."
+            exit 1
+          fi
+          docker buildx imagetools create \
+            -t "${ECR_REPOSITORY}:latest" \
+            -t "${ECR_REPOSITORY}:${GITHUB_SHA}" \
+            "${refs[@]}"
+
+      - name: Verify both architectures are published
+        run: |
+          set -euo pipefail
+          platforms=$(docker buildx imagetools inspect "${ECR_REPOSITORY}:${GITHUB_SHA}" \
+            --format '{{json .Manifest}}' \
+            | jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)"')
+          echo "Published platforms:"
+          echo "${platforms}"
+          for want in linux/amd64 linux/arm64; do
+            if ! grep -qx "${want}" <<<"${platforms}"; then
+              echo "::error::${ECR_REPOSITORY}:${GITHUB_SHA} is missing ${want}."
+              exit 1
+            fi
+          done
+
+  deploy:
+    needs: merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Require the deploy role variable
+        env:
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "${ROLE_ARN}" ]; then
+            echo "::error::Repository variable AWS_DEPLOY_ROLE_ARN is not set; cannot assume the deploy role."
+            exit 1
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: cv-domain-service-deploy-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Roll the app host (SSM)
+        run: |
+          set -euo pipefail
+          command_id=$(aws ssm send-command \
+            --document-name "${SSM_DOCUMENT}" \
+            --targets "Key=tag:Name,Values=${TARGET_NAME_TAG}" \
+            --comment "cv-domain-service ${GITHUB_SHA::7}" \
+            --query 'Command.CommandId' --output text)
+          echo "SSM command: ${command_id}"
+
+          deadline=$(( $(date +%s) + 5 * 60 ))
+          while :; do
+            invocations=$(aws ssm list-command-invocations \
+              --command-id "${command_id}" --details --output json)
+            count=$(jq '.CommandInvocations | length' <<<"$invocations")
+            status=$(jq -r '.CommandInvocations[0].Status // "none"' <<<"$invocations")
+            echo "$(date -u +%H:%M:%S) invocations=${count} status=${status}"
+            if [ "$count" -gt 1 ]; then
+              echo "::error::Expected exactly one target instance, got ${count}."
+              exit 1
+            fi
+            if [ "$count" -eq 1 ]; then
+              case "$status" in
+                Pending|InProgress|Delayed|Cancelling) ;;
+                *) break ;;
+              esac
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::SSM command ${command_id} did not finish within 5 minutes (invocations=${count}, status=${status})."
+              exit 1
+            fi
+            sleep 10
+          done
+
+          echo "--- invocation output (tail) ---"
+          jq -r '.CommandInvocations[0].CommandPlugins[]?.Output // empty' <<<"$invocations" | tail -n 30
+          echo "--------------------------------"
+          if [ "$status" != "Success" ]; then
+            echo "::error::SSM redeploy finished with status ${status}."
+            exit 1
+          fi
+
+      - name: Smoke check
+        run: |
+          set -euo pipefail
+          # The JVM takes ~30-40 s to start; allow ~2 minutes.
+          deadline=$(( $(date +%s) + 120 ))
+          until curl -fsS -o /dev/null "${PUBLIC_BASE_URL}/bff/api/v1/people/1/cv"; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::${PUBLIC_BASE_URL}/bff/api/v1/people/1/cv did not answer 200 within 2 minutes."
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "BFF aggregate: 200"
+
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "${PUBLIC_BASE_URL}/api/v1/people/1")
+          echo "Domain API without a token: ${code}"
+          if [ "$code" != "401" ]; then
+            echo "::error::Expected 401 from the domain API without a token, got ${code}."
+            exit 1
+          fi

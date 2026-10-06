@@ -12,7 +12,13 @@ mvn -B package -DskipTests # build the jar
 docker build -t cv-domain-service .   # multi-stage prod image
 ```
 
-Swagger UI: `http://localhost:8080/swagger-ui.html`. Metrics: `/actuator/prometheus`. CI: `Jenkinsfile` (lint → test → package → image), bounded by a 20-minute pipeline timeout; the `Deploy` stage (gated on `master`) is a no-op placeholder until T-112.
+Swagger UI: `http://localhost:8080/swagger-ui.html`. Metrics: `/actuator/prometheus`. CI: `Jenkinsfile` (lint → test → package → image), bounded by a 20-minute pipeline timeout; the `Deploy` stage (gated on `master`) only points at the deploy workflow. See *CI and deploy* below.
+
+## CI and deploy (T-112)
+
+- **Jenkins is the CI and test gate** (`Jenkinsfile`: checkstyle, tests, package, image build). It holds **no deploy credential**: every build on the CI host is effectively root through `docker.sock` (T-005).
+- **GitHub Actions deploys** (`.github/workflows/deploy.yml`, master pushes only). Job `wait-for-jenkins` polls the commit statuses API for the newest `continuous-integration/jenkins/branch` status on that commit (up to 30 min, since the CI host is woken on demand): `success` deploys, `failure`/`error` or nothing green in time blocks. Job `deploy` assumes the OIDC role in the repo variable **`AWS_DEPLOY_ROLE_ARN`**, builds a multi-arch (`linux/amd64,linux/arm64`) image, pushes `:latest` and `:<sha>` to ECR `cv-project-domain-service`, sends SSM document `cv-redeploy-domain-service` to the host tagged `Name=cv-project-domain-service`, waits for the invocation, then smoke-checks the BFF aggregate (200) and the domain API without a token (401).
+- **Rollback:** retag a previous image as `:latest` (`aws ecr batch-get-image` on `:<sha>` → `put-image --image-tag latest` with the same manifest) and re-send the document (`aws ssm send-command --document-name cv-redeploy-domain-service --targets Key=tag:Name,Values=cv-project-domain-service`), or follow the cv-infra runbook. The ECR lifecycle policy keeps only a few images, so only recent SHAs are available.
 
 ## Architecture & conventions
 
