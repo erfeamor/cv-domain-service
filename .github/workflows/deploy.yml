@@ -28,8 +28,11 @@ env:
 
 jobs:
   # Same checks as a pull request (lint, tests, package, image build). The
-  # called workflow needs only contents: read, which the caller grants below.
+  # called workflow needs only contents: read; grant just that here so the
+  # gate never inherits id-token: write from the top level.
   gate:
+    permissions:
+      contents: read
     uses: ./.github/workflows/gate.yml
 
   # Build each architecture on a native runner (no QEMU: an emulated arm64

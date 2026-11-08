@@ -68,6 +68,15 @@ class Gate(unittest.TestCase):
         self.assertEqual(setup[0]["with"]["cache"], "maven")
         self.assertTrue(any(u.startswith("actions/upload-artifact@v4") for u in uses))
 
+    def test_runs_structural_tests_after_checkout(self):
+        steps = next(iter(self.wf["jobs"].values()))["steps"]
+        idx = [i for i, s in enumerate(steps)
+               if "unittest discover -s scripts/tests" in str(s.get("run", ""))]
+        self.assertEqual(len(idx), 1)
+        self.assertGreater(idx[0], 0)
+        self.assertEqual(steps[0]["uses"], "actions/checkout@v4")
+        self.assertIn("import yaml", str(steps[idx[0]]["run"]))
+
     def test_image_not_pushed(self):
         self.assertNotIn("push", run_text(next(iter(self.wf["jobs"].values()))).lower())
         self.assertNotIn("login", self.text.lower())
@@ -106,6 +115,27 @@ class Deploy(unittest.TestCase):
 
     def test_permissions_cover_gate(self):
         self.assertEqual(self.wf["permissions"], {"id-token": "write", "contents": "read"})
+
+    def test_gate_caller_permissions_read_only(self):
+        # The caller job must not inherit id-token: write from the top level.
+        self.assertEqual(self.wf["jobs"]["gate"]["permissions"], {"contents": "read"})
+
+    def test_queue_and_job_graph(self):
+        c = self.wf["concurrency"]
+        self.assertEqual(c["group"], "deploy-cv-domain-service")
+        self.assertIs(c["cancel-in-progress"], False)
+        jobs = self.wf["jobs"]
+        self.assertEqual(set(jobs), {"gate", "build", "merge", "deploy"})
+        self.assertEqual(jobs["merge"]["needs"], "build")
+        self.assertEqual(jobs["deploy"]["needs"], "merge")
+
+    def test_job_permissions(self):
+        jobs = self.wf["jobs"]
+        want = {"id-token": "write", "contents": "read"}
+        self.assertEqual(jobs["build"]["permissions"], want)
+        self.assertEqual(jobs["merge"]["permissions"], want)
+        # deploy declares none: it inherits the top-level grant.
+        self.assertNotIn("permissions", jobs["deploy"])
 
     def test_base_url(self):
         self.assertEqual(self.wf["env"]["PUBLIC_BASE_URL"], "https://erfeamor.com")

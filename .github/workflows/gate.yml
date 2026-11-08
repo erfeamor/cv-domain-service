@@ -25,6 +25,11 @@ jobs:
           java-version: "17"
           cache: maven
 
+      - name: Workflow structure tests
+        run: |
+          python3 -c 'import yaml' || pip install --user pyyaml
+          python3 -m unittest discover -s scripts/tests -v
+
       - name: Lint
         run: mvn -B checkstyle:check
 
