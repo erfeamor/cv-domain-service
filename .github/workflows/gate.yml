@@ -1,0 +1,51 @@
+# CI gate for cv-domain-service (T-117): checkstyle -> tests -> package -> image.
+# Reusable: ci.yml (pull requests) and deploy.yml (master pushes) both call it,
+# so a deploy runs exactly the checks a PR ran. It holds no credential and
+# pushes nothing; the image is built only to prove the Dockerfile still works.
+name: gate
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    # Bounds a wedged Maven download or base-image pull (the retired CI host
+    # pipeline used the same 20 minutes, ~2.5x its worst cold build).
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Workflow structure tests
+        run: |
+          python3 -c 'import yaml' || pip install --user pyyaml
+          python3 -m unittest discover -s scripts/tests -v
+
+      - name: Lint
+        run: mvn -B checkstyle:check
+
+      - name: Test
+        run: mvn -B test
+
+      - name: Upload surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          if-no-files-found: ignore
+
+      - name: Build
+        run: mvn -B package -DskipTests
+
+      - name: Docker image (amd64, not pushed)
+        run: docker build -t cv-domain-service:${GITHUB_SHA} .

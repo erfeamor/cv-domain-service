@@ -12,12 +12,14 @@ mvn -B package -DskipTests # build the jar
 docker build -t cv-domain-service .   # multi-stage prod image
 ```
 
-Swagger UI: `http://localhost:8080/swagger-ui.html`. Metrics: `/actuator/prometheus`. CI: `Jenkinsfile` (lint → test → package → image), bounded by a 20-minute pipeline timeout; the `Deploy` stage (gated on `master`) only points at the deploy workflow. See *CI and deploy* below.
+Swagger UI: `http://localhost:8080/swagger-ui.html`. Metrics: `/actuator/prometheus`. CI: `.github/workflows/gate.yml` (lint → test → package → image), bounded by a 20-minute job timeout. See *CI and deploy* below.
+
+Workflow structure test (offline, needs PyYAML): `python3 -m unittest discover -s scripts/tests -v`.
 
 ## CI and deploy (T-112)
 
-- **Jenkins is the CI and test gate** (`Jenkinsfile`: checkstyle, tests, package, image build). It holds **no deploy credential**: every build on the CI host is effectively root through `docker.sock` (T-005).
-- **GitHub Actions deploys** (`.github/workflows/deploy.yml`, master pushes only). Job `wait-for-jenkins` polls the commit statuses API for the newest `continuous-integration/jenkins/branch` status on that commit (up to 30 min, since the CI host is woken on demand): `success` deploys, `failure`/`error` or nothing green in time blocks. Job `deploy` assumes the OIDC role in the repo variable **`AWS_DEPLOY_ROLE_ARN`**, builds a multi-arch (`linux/amd64,linux/arm64`) image, pushes `:latest` and `:<sha>` to ECR `cv-project-domain-service`, sends SSM document `cv-redeploy-domain-service` to the host tagged `Name=cv-project-domain-service`, waits for the invocation, then smoke-checks the BFF aggregate (200) and the domain API without a token (401).
+- **GitHub Actions is the CI and test gate** (T-117; Jenkins is gone). `.github/workflows/gate.yml` is a reusable workflow (`workflow_call`, `contents: read` only): JDK 17 Temurin with Maven cache, `mvn -B checkstyle:check`, `mvn -B test` (surefire reports uploaded as an artifact), `mvn -B package -DskipTests`, then a `docker build` of the image (amd64, not pushed, no registry login). `ci.yml` runs it on pull requests to `master` (concurrency cancels superseded runs); `deploy.yml` runs it as job `gate` on master pushes.
+- **Deploy** (`.github/workflows/deploy.yml`, master pushes only). Job `build` needs `gate`, assumes the OIDC role in the repo variable **`AWS_DEPLOY_ROLE_ARN`**, and builds each architecture of `linux/amd64,linux/arm64` on a native runner and pushes it by digest; job `merge` stitches the digests into one manifest list and pushes `:latest` and `:<sha>` to ECR `cv-project-domain-service`; job `deploy` (needs `merge`) sends SSM document `cv-redeploy-domain-service` to the host tagged `Name=cv-project-domain-service`, waits for the invocation, then smoke-checks the BFF aggregate (200) and the domain API without a token (401) via `https://erfeamor.com`. **No job may use `environment:`**: it changes the OIDC `sub` claim and the trust matches `ref:refs/heads/master` exactly (`scripts/tests/test_workflows.py` guards this).
 - **Rollback:** retag a previous image as `:latest` (`aws ecr batch-get-image` on `:<sha>` → `put-image --image-tag latest` with the same manifest) and re-send the document (`aws ssm send-command --document-name cv-redeploy-domain-service --targets Key=tag:Name,Values=cv-project-domain-service`), or follow the cv-infra runbook. The ECR lifecycle policy keeps only a few images, so only recent SHAs are available.
 
 ## Architecture & conventions
