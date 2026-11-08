@@ -1,10 +1,9 @@
-# Deploy cv-domain-service to production (T-112).
+# Deploy cv-domain-service to production (T-112, gate moved to Actions in T-117).
 #
-# Jenkins (Jenkinsfile) is this repo's CI and test gate. Deploys run here, not
-# in Jenkins, because no deploy credential may live on the CI host: every build
-# there is effectively root through docker.sock (T-005). This workflow assumes
-# a master-only OIDC role and deploys a commit only after Jenkins has reported
-# `success` for that same commit.
+# A master push first runs the shared gate (gate.yml: checkstyle, tests,
+# package, image build), then builds the multi-arch image, pushes it to ECR and
+# rolls the app host over SSM. The OIDC trust matches ref:refs/heads/master
+# exactly, so no job here may use `environment:` (it changes the sub claim).
 name: deploy
 
 on:
@@ -14,7 +13,6 @@ on:
 permissions:
   id-token: write
   contents: read
-  statuses: read
 
 # Queue deploys; never cancel one half-way through an SSM roll.
 concurrency:
@@ -26,52 +24,19 @@ env:
   ECR_REPOSITORY: 760904708057.dkr.ecr.eu-west-3.amazonaws.com/cv-project-domain-service
   SSM_DOCUMENT: cv-redeploy-domain-service
   TARGET_NAME_TAG: cv-project-domain-service
-  JENKINS_CONTEXT: continuous-integration/jenkins/branch
-  PUBLIC_BASE_URL: https://dvdlxl0zqepqi.cloudfront.net
+  PUBLIC_BASE_URL: https://erfeamor.com
 
 jobs:
-  wait-for-jenkins:
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    steps:
-      - name: Wait for a green Jenkins status on this commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          # The CI host is on-demand: a doorbell wakes it on push, it boots,
-          # then Jenkins scans, so the status can take several minutes to
-          # appear. Bounded at 30 minutes.
-          deadline=$(( $(date +%s) + 30 * 60 ))
-          while :; do
-            # Statuses are listed newest first; the first entry with our
-            # context is the current state for it.
-            state=$(gh api "repos/${REPO}/commits/${SHA}/statuses?per_page=100" \
-              --jq "[.[] | select(.context == \"${JENKINS_CONTEXT}\")][0].state // \"absent\"" \
-              || echo "api-error")
-            echo "$(date -u +%H:%M:%S) ${JENKINS_CONTEXT}: ${state}"
-            case "$state" in
-              success)
-                echo "Jenkins is green; deploying."
-                exit 0 ;;
-              failure|error)
-                echo "::error::Jenkins is red (${state}); not deploying."
-                exit 1 ;;
-            esac
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error::No green Jenkins status for ${SHA} after 30 minutes (last: ${state}); not deploying."
-              exit 1
-            fi
-            sleep 20
-          done
+  # Same checks as a pull request (lint, tests, package, image build). The
+  # called workflow needs only contents: read, which the caller grants below.
+  gate:
+    uses: ./.github/workflows/gate.yml
 
   # Build each architecture on a native runner (no QEMU: an emulated arm64
   # build stalled for 70 minutes in the T-203 twin pipeline) and push it to ECR
   # by digest only; the merge job stitches the digests into one manifest list.
   build:
-    needs: wait-for-jenkins
+    needs: gate
     strategy:
       fail-fast: true
       matrix:
