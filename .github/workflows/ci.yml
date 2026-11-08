@@ -1,0 +1,18 @@
+# Pull-request CI (T-117): runs the shared gate. Master pushes are gated by
+# deploy.yml, which calls the same gate before building and deploying.
+name: ci
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    uses: ./.github/workflows/gate.yml
