@@ -2,7 +2,7 @@
 
 Core domain API for the Currículum Interactivo project: the source of truth for résumé data, backed by [cv-database](../cv-database).
 
-Part of the [cv-project](../README.md) multi-repo. CI: Jenkins (lint, test, build). Deploy: GitHub Actions (`.github/workflows/deploy.yml`), on master only after Jenkins is green on that commit, so no deploy credential lives on the CI host. Set the repo variable `AWS_DEPLOY_ROLE_ARN`; rollback is in CLAUDE.md.
+Part of the [cv-project](../README.md) multi-repo. CI: GitHub Actions (`.github/workflows/gate.yml`: lint, test, build, image; run on PRs by `ci.yml`). Deploy: `.github/workflows/deploy.yml`, on master only after the same gate passes. Set the repo variable `AWS_DEPLOY_ROLE_ARN`; rollback is in CLAUDE.md.
 
 ## Stack
 
